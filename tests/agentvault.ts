@@ -438,4 +438,72 @@ describe("AgentVault - Vault Initialization", () => {
 
     assert.strictEqual(vaultAccount, null);
   });
+
+  it("allows different owners to initialize vaults with the same ID", async () => {
+    const secondOwner = Keypair.generate();
+
+    // Both owners use Vault ID 1.
+    const id = new BN(1);
+
+    // Original owner's Vault PDA.
+    const [originalVaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), owner.toBuffer(), id.toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+
+    // Second owner's Vault PDA.
+    const [secondVaultPda, secondBump] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("vault"),
+        secondOwner.publicKey.toBuffer(),
+        id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // The addresses must be different.
+    assert.ok(!originalVaultPda.equals(secondVaultPda));
+
+    // Fund the second owner to cover Vault account rent.
+    const airdropSignature = await provider.connection.requestAirdrop(
+      secondOwner.publicKey,
+      LAMPORTS_PER_SOL
+    );
+
+    await provider.connection.confirmTransaction(airdropSignature, "confirmed");
+
+    // Verify the second Vault has not yet been created.
+    const before = await provider.connection.getAccountInfo(secondVaultPda);
+
+    assert.strictEqual(before, null);
+
+    // Initialize the second owner's Vault.
+    // Unlike Test 8, this owner actually signs.
+    await program.methods
+      .initializeVault(id)
+      .accountsPartial({
+        owner: secondOwner.publicKey,
+        vault: secondVaultPda,
+        tokenMint,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([secondOwner])
+      .rpc();
+
+    // Verify the second Vault's state.
+    const secondVault = await program.account.vault.fetch(secondVaultPda);
+
+    assert.ok(secondVault.owner.equals(secondOwner.publicKey));
+    assert.ok(secondVault.tokenMint.equals(tokenMint));
+    assert.ok(secondVault.vaultId.eq(id));
+    assert.ok(secondVault.totalReserved.eq(new BN(0)));
+    assert.strictEqual(secondVault.paused, false);
+    assert.strictEqual(secondVault.bump, secondBump);
+
+    // Confirm the original owner's Vault remains unchanged.
+    const originalVault = await program.account.vault.fetch(originalVaultPda);
+
+    assert.ok(originalVault.owner.equals(owner));
+    assert.ok(originalVault.vaultId.eq(id));
+  });
 });
