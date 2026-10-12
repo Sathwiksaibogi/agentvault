@@ -188,4 +188,64 @@ describe("AgentVault - Vault Initialization", () => {
     assert.strictEqual(correctAccount, null);
     assert.strictEqual(wrongAccount, null);
   });
+
+  it("rejects a Vault PDA derived with incorrect byte order", async () => {
+    const id = new BN(5);
+
+    // Correct PDA using little-endian bytes.
+    const [correctVaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), owner.toBuffer(), id.toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+
+    // Incorrect PDA using big-endian bytes.
+    const [wrongEndianPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), owner.toBuffer(), id.toArrayLike(Buffer, "be", 8)],
+      program.programId
+    );
+
+    // Both encodings must produce different addresses.
+    assert.ok(!correctVaultPda.equals(wrongEndianPda));
+
+    const before = await provider.connection.getAccountInfo(correctVaultPda);
+    assert.strictEqual(before, null);
+
+    // Attempt initialization using the incorrect PDA.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .initializeVault(id)
+          .accountsPartial({
+            owner,
+            vault: wrongEndianPda,
+            tokenMint,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const details = [
+          error?.message ?? "",
+          error?.error?.errorCode?.code ?? "",
+          ...(error?.logs ?? []),
+        ].join(" ");
+
+        assert.match(details, /ConstraintSeeds|2006|0x7d6|seeds constraint/i);
+
+        return true;
+      }
+    );
+
+    // Neither PDA should have been initialized.
+    const correctAccount = await provider.connection.getAccountInfo(
+      correctVaultPda
+    );
+
+    const wrongAccount = await provider.connection.getAccountInfo(
+      wrongEndianPda
+    );
+
+    assert.strictEqual(correctAccount, null);
+    assert.strictEqual(wrongAccount, null);
+  });
 });
