@@ -506,4 +506,82 @@ describe("AgentVault - Vault Initialization", () => {
     assert.ok(originalVault.owner.equals(owner));
     assert.ok(originalVault.vaultId.eq(id));
   });
+
+  it("rejects cross-owner Vault PDA substitution", async () => {
+    const id = new BN(10);
+
+    // Generate a victim identity.
+    const victim = Keypair.generate();
+
+    // The victim's legitimate Vault PDA.
+    const [victimVaultPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("vault"),
+        victim.publicKey.toBuffer(),
+        id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // The attacker's legitimate Vault PDA.
+    // The provider wallet acts as the attacker.
+    const [attackerVaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), owner.toBuffer(), id.toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+
+    // The two owners must have different PDA addresses.
+    assert.ok(!victimVaultPda.equals(attackerVaultPda));
+
+    // Neither Vault should exist before the attack.
+    const victimBefore = await provider.connection.getAccountInfo(
+      victimVaultPda
+    );
+
+    const attackerBefore = await provider.connection.getAccountInfo(
+      attackerVaultPda
+    );
+
+    assert.strictEqual(victimBefore, null);
+    assert.strictEqual(attackerBefore, null);
+
+    // Attack: Bob signs as himself but supplies Alice's PDA.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .initializeVault(id)
+          .accountsPartial({
+            owner, // Attacker signs using provider wallet
+            vault: victimVaultPda, // Victim's PDA
+            tokenMint,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const details = [
+          error?.message ?? "",
+          error?.error?.errorCode?.code ?? "",
+          ...(error?.logs ?? []),
+        ].join(" ");
+
+        // Anchor ConstraintSeeds error: 2006.
+        assert.match(details, /ConstraintSeeds|2006|0x7d6|seeds constraint/i);
+
+        return true;
+      }
+    );
+
+    // Verify the failed attack created neither Vault.
+    const victimAfter = await provider.connection.getAccountInfo(
+      victimVaultPda
+    );
+
+    const attackerAfter = await provider.connection.getAccountInfo(
+      attackerVaultPda
+    );
+
+    assert.strictEqual(victimAfter, null);
+    assert.strictEqual(attackerAfter, null);
+  });
 });
