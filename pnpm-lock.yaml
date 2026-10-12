@@ -27,6 +27,9 @@ importers:
       '@types/mocha':
         specifier: ^9.0.0
         version: 9.1.1
+      bn.js:
+        specifier: ^5.2.5
+        version: 5.2.5
       chai:
         specifier: ^4.3.4
         version: 4.5.0
