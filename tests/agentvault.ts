@@ -1,7 +1,7 @@
 import BN from "bn.js";
 import * as anchor from "@anchor-lang/core";
 import { Program } from "@anchor-lang/core";
-import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import { createMint, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { strict as assert } from "assert";
 
@@ -297,5 +297,67 @@ describe("AgentVault - Vault Initialization", () => {
     // The failed transaction must not create a Vault.
     const after = await provider.connection.getAccountInfo(vaultPda);
     assert.strictEqual(after, null);
+  });
+
+  it("rejects initialization with a nonexistent token mint", async () => {
+    const id = new BN(7);
+
+    // Derive the correct Vault PDA.
+    const [vaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), owner.toBuffer(), id.toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+
+    // Generate a public key without creating an on-chain account.
+    const nonexistentMint = Keypair.generate().publicKey;
+
+    // Verify that the mint account does not exist.
+    const mintBefore = await provider.connection.getAccountInfo(
+      nonexistentMint
+    );
+    assert.strictEqual(mintBefore, null);
+
+    // Verify the Vault does not exist.
+    const vaultBefore = await provider.connection.getAccountInfo(vaultPda);
+    assert.strictEqual(vaultBefore, null);
+
+    // Attempt initialization with the nonexistent mint.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .initializeVault(id)
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            tokenMint: nonexistentMint,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const details = [
+          error?.message ?? "",
+          error?.error?.errorCode?.code ?? "",
+          ...(error?.logs ?? []),
+        ].join(" ");
+
+        // Rejection may occur during transaction processing
+        // or Anchor's account initialization validation.
+        assert.match(
+          details,
+          /AccountNotInitialized|3012|0xbc4|missing|not found|does not exist|not initialized/i
+        );
+
+        return true;
+      }
+    );
+
+    // The failed transaction must not initialize the Vault.
+    const vaultAfter = await provider.connection.getAccountInfo(vaultPda);
+    assert.strictEqual(vaultAfter, null);
+
+    // The invalid mint must still not exist.
+    const mintAfter = await provider.connection.getAccountInfo(nonexistentMint);
+    assert.strictEqual(mintAfter, null);
   });
 });
