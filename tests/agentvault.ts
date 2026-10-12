@@ -248,4 +248,54 @@ describe("AgentVault - Vault Initialization", () => {
     assert.strictEqual(correctAccount, null);
     assert.strictEqual(wrongAccount, null);
   });
+
+  it("rejects initialization with an invalid SPL token mint", async () => {
+    const id = new BN(6);
+
+    // Derive the correct Vault PDA.
+    const [vaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), owner.toBuffer(), id.toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+
+    // Verify the Vault does not already exist.
+    const before = await provider.connection.getAccountInfo(vaultPda);
+    assert.strictEqual(before, null);
+
+    // The System Program is NOT a valid SPL Token mint.
+    const invalidMint = SystemProgram.programId;
+
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .initializeVault(id)
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            tokenMint: invalidMint,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const details = [
+          error?.message ?? "",
+          error?.error?.errorCode?.code ?? "",
+          ...(error?.logs ?? []),
+        ].join(" ");
+
+        // Anchor error 3007: AccountOwnedByWrongProgram.
+        assert.match(
+          details,
+          /AccountOwnedByWrongProgram|3007|0xbbf|owned by the wrong program/i
+        );
+
+        return true;
+      }
+    );
+
+    // The failed transaction must not create a Vault.
+    const after = await provider.connection.getAccountInfo(vaultPda);
+    assert.strictEqual(after, null);
+  });
 });
