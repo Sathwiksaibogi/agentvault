@@ -584,4 +584,53 @@ describe("AgentVault - Vault Initialization", () => {
     assert.strictEqual(victimAfter, null);
     assert.strictEqual(attackerAfter, null);
   });
+
+  it("initializes a vault with ID zero", async () => {
+    const zeroVaultId = new BN(0);
+
+    // Derive the PDA for Vault ID 0.
+    const [zeroVaultPda, zeroBump] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("vault"),
+        owner.toBuffer(),
+        zeroVaultId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // Vault ID 0 and Vault ID 1 must have different PDAs.
+    assert.ok(!zeroVaultPda.equals(vaultPda));
+
+    // Verify the zero-ID Vault does not exist.
+    const before = await provider.connection.getAccountInfo(zeroVaultPda);
+
+    assert.strictEqual(before, null);
+
+    // Initialize Vault ID 0.
+    await program.methods
+      .initializeVault(zeroVaultId)
+      .accountsPartial({
+        owner,
+        vault: zeroVaultPda,
+        tokenMint,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    // Fetch and verify the initialized Vault.
+    const zeroVault = await program.account.vault.fetch(zeroVaultPda);
+
+    assert.ok(zeroVault.owner.equals(owner));
+    assert.ok(zeroVault.tokenMint.equals(tokenMint));
+    assert.ok(zeroVault.vaultId.eq(zeroVaultId));
+    assert.ok(zeroVault.totalReserved.eq(new BN(0)));
+    assert.strictEqual(zeroVault.paused, false);
+    assert.strictEqual(zeroVault.bump, zeroBump);
+
+    // Confirm the original Vault ID 1 is unaffected.
+    const originalVault = await program.account.vault.fetch(vaultPda);
+
+    assert.ok(originalVault.vaultId.eq(vaultId));
+    assert.ok(originalVault.owner.equals(owner));
+  });
 });
