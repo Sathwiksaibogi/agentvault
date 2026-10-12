@@ -121,4 +121,71 @@ describe("AgentVault - Vault Initialization", () => {
     assert.ok(originalVault.vaultId.eq(vaultId));
     assert.ok(originalVault.owner.equals(owner));
   });
+
+  it("rejects initialization with an incorrect Vault PDA", async () => {
+    const id = new BN(3);
+    const wrongId = new BN(4);
+
+    // Correct PDA for Vault ID 3
+    const [correctVaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), owner.toBuffer(), id.toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+
+    // Incorrect PDA derived using Vault ID 4
+    const [wrongVaultPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("vault"),
+        owner.toBuffer(),
+        wrongId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // Confirm the addresses are different.
+    assert.ok(!correctVaultPda.equals(wrongVaultPda));
+
+    // Verify the intended Vault does not already exist.
+    const before = await provider.connection.getAccountInfo(correctVaultPda);
+    assert.strictEqual(before, null);
+
+    // Try initializing ID 3 using the PDA for ID 4.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .initializeVault(id)
+          .accountsPartial({
+            owner,
+            vault: wrongVaultPda,
+            tokenMint,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const details = [
+          error?.message ?? "",
+          error?.error?.errorCode?.code ?? "",
+          ...(error?.logs ?? []),
+        ].join(" ");
+
+        // Anchor error 2006: ConstraintSeeds
+        assert.match(details, /ConstraintSeeds|2006|0x7d6|seeds constraint/i);
+
+        return true;
+      }
+    );
+
+    // A failed transaction must not create either Vault.
+    const correctAccount = await provider.connection.getAccountInfo(
+      correctVaultPda
+    );
+
+    const wrongAccount = await provider.connection.getAccountInfo(
+      wrongVaultPda
+    );
+
+    assert.strictEqual(correctAccount, null);
+    assert.strictEqual(wrongAccount, null);
+  });
 });
