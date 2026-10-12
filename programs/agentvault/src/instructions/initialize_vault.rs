@@ -1,10 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::Mint;
 
-use crate::{
-    constants::VAULT_SEED,
-    state::Vault,
-};
+use crate::{constants::VAULT_SEED, state::Vault};
 
 #[derive(Accounts)]
 #[instruction(vault_id: u64)]
@@ -28,4 +25,17 @@ pub struct InitializeVault<'info> {
     pub token_mint: Account<'info, Mint>,
 
     pub system_program: Program<'info, System>,
+}
+
+pub fn handler(ctx: Context<InitializeVault>, vault_id: u64) -> Result<()> {
+    let vault = &mut ctx.accounts.vault;
+
+    vault.owner = ctx.accounts.owner.key();
+    vault.token_mint = ctx.accounts.token_mint.key();
+    vault.vault_id = vault_id;
+    vault.total_reserved = 0;
+    vault.paused = false;
+    vault.bump = ctx.bumps.vault;
+
+    Ok(())
 }

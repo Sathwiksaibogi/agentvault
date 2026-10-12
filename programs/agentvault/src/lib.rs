@@ -14,4 +14,8 @@ declare_id!("BVhTPuAK9birmLeYBeAuBMusEdYW9oFjQeJeMU9hNX9d");
 #[program]
 pub mod agentvault {
     use super::*;
+
+    pub fn initialize_vault(ctx: Context<InitializeVault>, vault_id: u64) -> Result<()> {
+        instructions::initialize_vault::handler(ctx, vault_id)
+    }
 }
