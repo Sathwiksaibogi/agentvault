@@ -633,4 +633,57 @@ describe("AgentVault - Vault Initialization", () => {
     assert.ok(originalVault.vaultId.eq(vaultId));
     assert.ok(originalVault.owner.equals(owner));
   });
+
+  it("initializes a vault with maximum u64 ID", async () => {
+    // Maximum unsigned 64-bit integer.
+    const maxVaultId = new BN("18446744073709551615");
+
+    // Encode the vault ID as 8-byte little-endian.
+    const vaultIdBytes = maxVaultId.toArrayLike(Buffer, "le", 8);
+
+    // Maximum u64 should produce eight 0xff bytes.
+    assert.strictEqual(vaultIdBytes.toString("hex"), "ffffffffffffffff");
+
+    // Derive the correct Vault PDA.
+    const [maxVaultPda, maxBump] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), owner.toBuffer(), vaultIdBytes],
+      program.programId
+    );
+
+    // Ensure it differs from the original Vault ID 1.
+    assert.ok(!maxVaultPda.equals(vaultPda));
+
+    // The Vault should not exist before initialization.
+    const before = await provider.connection.getAccountInfo(maxVaultPda);
+
+    assert.strictEqual(before, null);
+
+    // Initialize with maximum u64 ID.
+    await program.methods
+      .initializeVault(maxVaultId)
+      .accountsPartial({
+        owner,
+        vault: maxVaultPda,
+        tokenMint,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    // Fetch the initialized Vault.
+    const maxVault = await program.account.vault.fetch(maxVaultPda);
+
+    // Verify all stored fields.
+    assert.ok(maxVault.owner.equals(owner));
+    assert.ok(maxVault.tokenMint.equals(tokenMint));
+    assert.ok(maxVault.vaultId.eq(maxVaultId));
+    assert.ok(maxVault.totalReserved.eq(new BN(0)));
+    assert.strictEqual(maxVault.paused, false);
+    assert.strictEqual(maxVault.bump, maxBump);
+
+    // Verify the original Vault is unaffected.
+    const originalVault = await program.account.vault.fetch(vaultPda);
+
+    assert.ok(originalVault.vaultId.eq(vaultId));
+    assert.ok(originalVault.owner.equals(owner));
+  });
 });
