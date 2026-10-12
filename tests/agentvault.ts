@@ -1,7 +1,12 @@
 import BN from "bn.js";
 import * as anchor from "@anchor-lang/core";
 import { Program } from "@anchor-lang/core";
-import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import {
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  LAMPORTS_PER_SOL,
+} from "@solana/web3.js";
 import { createMint, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { strict as assert } from "assert";
 
@@ -359,5 +364,78 @@ describe("AgentVault - Vault Initialization", () => {
     // The invalid mint must still not exist.
     const mintAfter = await provider.connection.getAccountInfo(nonexistentMint);
     assert.strictEqual(mintAfter, null);
+  });
+
+  it("rejects vault initialization without the owner's signature", async () => {
+    const id = new BN(8);
+
+    // Generate a new owner identity.
+    const unsignedOwner = Keypair.generate();
+
+    // Derive this owner's Vault PDA.
+    const [vaultPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("vault"),
+        unsignedOwner.publicKey.toBuffer(),
+        id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // Fund the owner so insufficient SOL cannot explain
+    // the expected rejection.
+    const airdropSignature = await provider.connection.requestAirdrop(
+      unsignedOwner.publicKey,
+      LAMPORTS_PER_SOL
+    );
+
+    await provider.connection.confirmTransaction(airdropSignature, "confirmed");
+
+    // Construct the instruction claiming this owner.
+    const instruction = await program.methods
+      .initializeVault(id)
+      .accountsPartial({
+        owner: unsignedOwner.publicKey,
+        vault: vaultPda,
+        tokenMint,
+        systemProgram: SystemProgram.programId,
+      })
+      .instruction();
+
+    // Verify that the instruction requires the owner to sign.
+    const ownerMeta = instruction.keys.find((account) =>
+      account.pubkey.equals(unsignedOwner.publicKey)
+    );
+
+    assert.ok(ownerMeta, "Owner account must be present");
+    assert.strictEqual(ownerMeta.isSigner, true);
+
+    // Do NOT provide unsignedOwner in .signers().
+    // The provider wallet is a different identity.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .initializeVault(id)
+          .accountsPartial({
+            owner: unsignedOwner.publicKey,
+            vault: vaultPda,
+            tokenMint,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const message = String(error?.message ?? error);
+
+        assert.match(message, /signature|signer|not signed/i);
+
+        return true;
+      }
+    );
+
+    // Verify that the rejected attempt created no Vault.
+    const vaultAccount = await provider.connection.getAccountInfo(vaultPda);
+
+    assert.strictEqual(vaultAccount, null);
   });
 });
