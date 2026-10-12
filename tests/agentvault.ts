@@ -17,15 +17,14 @@ describe("AgentVault - Vault Initialization", () => {
 
   const vaultId = new BN(1);
 
-  const [vaultPda, vaultBump] =
-    PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("vault"),
-        owner.toBuffer(),
-        vaultId.toArrayLike(Buffer, "le", 8),
-      ],
-      program.programId
-    );
+  const [vaultPda, vaultBump] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("vault"),
+      owner.toBuffer(),
+      vaultId.toArrayLike(Buffer, "le", 8),
+    ],
+    program.programId
+  );
 
   let tokenMint: PublicKey;
 
@@ -43,7 +42,6 @@ describe("AgentVault - Vault Initialization", () => {
   });
 
   it("initializes a vault with correct state", async () => {
-    
     const tx = await program.methods
       .initializeVault(vaultId)
       .accountsPartial({
@@ -78,5 +76,49 @@ describe("AgentVault - Vault Initialization", () => {
         })
         .rpc();
     });
+  });
+
+  it("allows the same owner to create multiple vaults", async () => {
+    const secondVaultId = new BN(2);
+
+    const [secondVaultPda, secondBump] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("vault"),
+        owner.toBuffer(),
+        secondVaultId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // Different vault IDs should derive different PDAs.
+    assert.ok(!secondVaultPda.equals(vaultPda));
+
+    // Initialize the second vault.
+    await program.methods
+      .initializeVault(secondVaultId)
+      .accountsPartial({
+        owner,
+        vault: secondVaultPda,
+        tokenMint,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    // Fetch the newly created vault.
+    const secondVault = await program.account.vault.fetch(secondVaultPda);
+
+    // Verify all important fields.
+    assert.ok(secondVault.owner.equals(owner));
+    assert.ok(secondVault.tokenMint.equals(tokenMint));
+    assert.ok(secondVault.vaultId.eq(secondVaultId));
+    assert.ok(secondVault.totalReserved.eq(new BN(0)));
+    assert.strictEqual(secondVault.paused, false);
+    assert.strictEqual(secondVault.bump, secondBump);
+
+    // Ensure the original vault remains unchanged.
+    const originalVault = await program.account.vault.fetch(vaultPda);
+
+    assert.ok(originalVault.vaultId.eq(vaultId));
+    assert.ok(originalVault.owner.equals(owner));
   });
 });
