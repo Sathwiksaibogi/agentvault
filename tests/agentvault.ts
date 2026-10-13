@@ -7,7 +7,13 @@ import {
   SystemProgram,
   LAMPORTS_PER_SOL,
 } from "@solana/web3.js";
-import { createMint, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import {
+  createMint,
+  getAccount,
+  getAssociatedTokenAddressSync,
+  TOKEN_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+} from "@solana/spl-token";
 import { strict as assert } from "assert";
 
 import type { Agentvault } from "../target/types/agentvault";
@@ -685,5 +691,147 @@ describe("AgentVault - Vault Initialization", () => {
 
     assert.ok(originalVault.vaultId.eq(vaultId));
     assert.ok(originalVault.owner.equals(owner));
+  });
+
+  it("initializes a treasury controlled by the Vault PDA", async () => {
+    // STEP 1: Fetch the existing Vault.
+    const vault = await program.account.vault.fetch(vaultPda);
+
+    assert.ok(vault.owner.equals(owner));
+    assert.ok(vault.tokenMint.equals(tokenMint));
+
+    // STEP 2: Derive the treasury Associated Token Account.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true, // Vault PDA is an off-curve authority.
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    console.log("Vault PDA:", vaultPda.toBase58());
+    console.log("Treasury ATA:", treasuryAta.toBase58());
+    console.log("RPC endpoint:", provider.connection.rpcEndpoint);
+
+    // STEP 3: Verify the treasury does not already exist.
+    const before = await provider.connection.getAccountInfo(
+      treasuryAta,
+      "processed"
+    );
+
+    assert.strictEqual(
+      before,
+      null,
+      "Treasury must not exist before initialization"
+    );
+
+    // STEP 4: Execute treasury initialization.
+    // Use default RPC settings while investigating the
+    // previous blockhash and confirmation errors.
+    const tx = await program.methods
+      .initializeTreasury()
+      .accountsPartial({
+        owner,
+        vault: vaultPda,
+        tokenMint,
+        treasury: treasuryAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    console.log("Treasury transaction:", tx);
+
+    // STEP 5: Inspect the transaction status.
+    const statuses = await provider.connection.getSignatureStatuses([tx], {
+      searchTransactionHistory: true,
+    });
+
+    const status = statuses.value[0];
+
+    console.log("Transaction status:", status);
+
+    // STEP 6: Check treasury visibility at both commitments.
+    const processedInfo = await provider.connection.getAccountInfo(
+      treasuryAta,
+      "processed"
+    );
+
+    const confirmedInfo = await provider.connection.getAccountInfo(
+      treasuryAta,
+      "confirmed"
+    );
+
+    console.log("Treasury exists at processed:", processedInfo !== null);
+
+    console.log("Treasury exists at confirmed:", confirmedInfo !== null);
+
+    if (processedInfo) {
+      console.log("Treasury program owner:", processedInfo.owner.toBase58());
+
+      console.log("Treasury data length:", processedInfo.data.length);
+    }
+
+    // STEP 7: Verify transaction execution.
+    assert.ok(status, "Treasury transaction status was not found");
+
+    assert.strictEqual(
+      status.err,
+      null,
+      "Treasury initialization transaction failed"
+    );
+
+    assert.ok(
+      processedInfo,
+      "Treasury ATA was not created at processed commitment"
+    );
+
+    // STEP 8: Decode the treasury SPL token account.
+    const treasury = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 9: Verify token authority.
+    assert.ok(
+      treasury.owner.equals(vaultPda),
+      "Treasury authority must be the Vault PDA"
+    );
+
+    // STEP 10: Verify token mint.
+    assert.ok(
+      treasury.mint.equals(tokenMint),
+      "Treasury mint must match the Vault mint"
+    );
+
+    // STEP 11: Verify initial balance.
+    assert.strictEqual(
+      treasury.amount.toString(),
+      "0",
+      "New treasury balance must be zero"
+    );
+
+    // STEP 12: Verify token account initialization.
+    assert.strictEqual(treasury.isInitialized, true);
+
+    // STEP 13: Verify the account is owned by SPL Token.
+    assert.ok(
+      processedInfo.owner.equals(TOKEN_PROGRAM_ID),
+      "Treasury account must be owned by the SPL Token Program"
+    );
+
+    // Classic SPL Token accounts occupy 165 bytes.
+    assert.strictEqual(processedInfo.data.length, 165);
+
+    // STEP 14: Ensure Vault accounting remains unchanged.
+    const updatedVault = await program.account.vault.fetch(vaultPda);
+
+    assert.ok(updatedVault.totalReserved.eq(new BN(0)));
+    assert.strictEqual(updatedVault.paused, false);
+
+    console.log("Treasury initialization verified successfully!");
   });
 });
