@@ -13,4 +13,7 @@ pub enum ErrorCode {
 
     #[msg("Deposit amount must be greater than zero")]
     InvalidDepositAmount,
+
+    #[msg("Invalid agent authority public key")]
+    InvalidAgentAuthority,
 }

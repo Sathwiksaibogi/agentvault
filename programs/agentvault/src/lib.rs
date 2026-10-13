@@ -26,4 +26,8 @@ pub mod agentvault {
     pub fn deposit_tokens(ctx: Context<DepositTokens>, amount: u64) -> Result<()> {
         instructions::deposit_tokens::handler(ctx, amount)
     }
+
+    pub fn register_agent(ctx: Context<RegisterAgent>, agent_authority: Pubkey) -> Result<()> {
+        instructions::register_agent::handler(ctx, agent_authority)
+    }
 }
