@@ -2,8 +2,12 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum ErrorCode {
-    #[msg("Only the counter authority can update this counter")]
+    #[msg("Unauthorized AgentVault operation")]
     Unauthorized,
-    #[msg("Counter has reached the maximum value")]
-    CounterOverflow,
+
+    #[msg("Vault is paused")]
+    VaultPaused,
+
+    #[msg("Insufficient unreserved treasury balance")]
+    InsufficientUnreservedFunds,
 }
