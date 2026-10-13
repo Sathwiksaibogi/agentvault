@@ -18,4 +18,8 @@ pub mod agentvault {
     pub fn initialize_vault(ctx: Context<InitializeVault>, vault_id: u64) -> Result<()> {
         instructions::initialize_vault::handler(ctx, vault_id)
     }
+
+    pub fn initialize_treasury(ctx: Context<InitializeTreasury>) -> Result<()> {
+        instructions::initialize_treasury::handler(ctx)
+    }
 }
