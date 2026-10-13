@@ -834,4 +834,65 @@ describe("AgentVault - Vault Initialization", () => {
 
     console.log("Treasury initialization verified successfully!");
   });
+
+  it("rejects duplicate treasury initialization", async () => {
+    // Derive the existing treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 1: Verify the treasury already exists.
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.ok(treasuryBefore.owner.equals(vaultPda));
+    assert.ok(treasuryBefore.mint.equals(tokenMint));
+
+    const balanceBefore = treasuryBefore.amount;
+
+    // STEP 2: Attempt to initialize the same treasury again.
+    await assert.rejects(async () => {
+      await program.methods
+        .initializeTreasury()
+        .accountsPartial({
+          owner,
+          vault: vaultPda,
+          tokenMint,
+          treasury: treasuryAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+    });
+
+    // STEP 3: Verify the original treasury remains intact.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.ok(treasuryAfter.owner.equals(vaultPda));
+    assert.ok(treasuryAfter.mint.equals(tokenMint));
+
+    // No funds should be added or removed.
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      balanceBefore.toString()
+    );
+
+    assert.strictEqual(treasuryAfter.isInitialized, true);
+
+    console.log("Duplicate treasury initialization rejected");
+  });
 });
