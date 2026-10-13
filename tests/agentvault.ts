@@ -1521,4 +1521,150 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Owner balance:", ownerAfter.amount.toString());
     console.log("Treasury balance:", treasuryAfter.amount.toString());
   });
+
+  it("rejects treasury destination substitution", async () => {
+    // STEP 1: Derive the legitimate owner's token ATA.
+    const ownerTokenAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      owner,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 2: Derive the legitimate Vault treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 3: Create a non-associated SPL token account.
+    // The account address has its own keypair, but its
+    // SPL token authority will be the Vault PDA.
+    const substituteTreasuryKeypair = Keypair.generate();
+
+    const substituteTreasury = await createAccount(
+      provider.connection,
+      payer,
+      tokenMint,
+      vaultPda,
+      substituteTreasuryKeypair, // Explicit keypair avoids ATA derivation.
+      { commitment: "processed" },
+      TOKEN_PROGRAM_ID
+    );
+
+    // It must be different from the legitimate treasury ATA.
+    assert.ok(!substituteTreasury.equals(treasuryAta));
+
+    // STEP 4: Verify the substitute is otherwise valid.
+    const substituteBefore = await getAccount(
+      provider.connection,
+      substituteTreasury,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.ok(substituteBefore.mint.equals(tokenMint));
+    assert.ok(substituteBefore.owner.equals(vaultPda));
+    assert.strictEqual(substituteBefore.amount.toString(), "0");
+
+    // STEP 5: Record existing balances.
+    const ownerBefore = await getAccount(
+      provider.connection,
+      ownerTokenAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 6: Attempt to redirect a deposit.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .depositTokens(new BN(50_000))
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            tokenMint,
+            ownerTokenAccount: ownerTokenAta,
+            treasury: substituteTreasury,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const details = [
+          error?.error?.errorCode?.code ?? "",
+          error?.error?.errorCode?.number ?? "",
+          error?.message ?? "",
+          ...(error?.logs ?? []),
+        ].join("\n");
+
+        // Reject the substituted ATA address.
+        assert.match(
+          details,
+          /ConstraintAssociated|2009|0x7d9|associated token constraint/i
+        );
+
+        return true;
+      }
+    );
+
+    // STEP 7: Fetch all balances after rejection.
+    const ownerAfter = await getAccount(
+      provider.connection,
+      ownerTokenAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const substituteAfter = await getAccount(
+      provider.connection,
+      substituteTreasury,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 8: No tokens may move.
+    assert.strictEqual(
+      ownerAfter.amount.toString(),
+      ownerBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      substituteAfter.amount.toString(),
+      substituteBefore.amount.toString()
+    );
+
+    // STEP 9: Verify Vault accounting is unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda);
+
+    assert.ok(vaultAfter.totalReserved.eq(new BN(0)));
+
+    console.log("Treasury destination substitution rejected!");
+    console.log("Owner balance:", ownerAfter.amount.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+    console.log("Substitute balance:", substituteAfter.amount.toString());
+  });
 });
