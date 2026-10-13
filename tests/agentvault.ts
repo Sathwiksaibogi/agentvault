@@ -15,6 +15,8 @@ import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountInstruction,
   createMintToInstruction,
+  createAccount,
+  mintTo,
 } from "@solana/spl-token";
 import { strict as assert } from "assert";
 
@@ -1351,6 +1353,171 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Incorrect token mint rejected correctly!");
     console.log("Configured mint:", tokenMint.toBase58());
     console.log("Rejected mint:", wrongMint.toBase58());
+    console.log("Owner balance:", ownerAfter.amount.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+  });
+
+  it("rejects deposits from an unauthorized source token account", async () => {
+    // STEP 1: Create a different token authority.
+    const foreignAuthority = Keypair.generate();
+
+    assert.ok(!foreignAuthority.publicKey.equals(owner));
+
+    // STEP 2: Create a valid SPL token account owned by
+    // the foreign authority, using the Vault's actual mint.
+    const foreignTokenAccount = await createAccount(
+      provider.connection,
+      payer,
+      tokenMint,
+      foreignAuthority.publicKey,
+      undefined,
+      { commitment: "processed" },
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 3: Fund the foreign account with test tokens.
+    // Our test wallet is the mint authority.
+    await mintTo(
+      provider.connection,
+      payer,
+      tokenMint,
+      foreignTokenAccount,
+      owner,
+      100_000,
+      [],
+      { commitment: "processed" },
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 4: Derive the legitimate owner's token ATA.
+    const ownerTokenAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      owner,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 5: Derive the Vault treasury.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 6: Fetch all three token accounts.
+    const foreignBefore = await getAccount(
+      provider.connection,
+      foreignTokenAccount,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const ownerBefore = await getAccount(
+      provider.connection,
+      ownerTokenAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // The foreign account has the correct mint and funds,
+    // but a different token authority.
+    assert.ok(foreignBefore.mint.equals(tokenMint));
+    assert.ok(foreignBefore.owner.equals(foreignAuthority.publicKey));
+
+    assert.strictEqual(foreignBefore.amount.toString(), "100000");
+
+    // STEP 7: Attempt to deposit Bob's tokens using
+    // Alice's Vault owner signature.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .depositTokens(new BN(50_000))
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            tokenMint,
+            ownerTokenAccount: foreignTokenAccount,
+            treasury: treasuryAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const details = [
+          error?.error?.errorCode?.code ?? "",
+          error?.error?.errorCode?.number ?? "",
+          error?.message ?? "",
+          ...(error?.logs ?? []),
+        ].join("\n");
+
+        // Anchor's token authority constraint must reject it.
+        assert.match(
+          details,
+          /ConstraintTokenOwner|2015|0x7df|token owner constraint/i
+        );
+
+        return true;
+      }
+    );
+
+    // STEP 8: Read account balances after rejection.
+    const foreignAfter = await getAccount(
+      provider.connection,
+      foreignTokenAccount,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const ownerAfter = await getAccount(
+      provider.connection,
+      ownerTokenAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 9: Confirm that no tokens moved.
+    assert.strictEqual(
+      foreignAfter.amount.toString(),
+      foreignBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      ownerAfter.amount.toString(),
+      ownerBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    // STEP 10: Verify foreign account ownership is unchanged.
+    assert.ok(foreignAfter.owner.equals(foreignAuthority.publicKey));
+
+    // STEP 11: Verify Vault accounting is unaffected.
+    const vaultAfter = await program.account.vault.fetch(vaultPda);
+
+    assert.ok(vaultAfter.totalReserved.eq(new BN(0)));
+
+    console.log("Unauthorized source token account rejected!");
+    console.log("Foreign balance:", foreignAfter.amount.toString());
     console.log("Owner balance:", ownerAfter.amount.toString());
     console.log("Treasury balance:", treasuryAfter.amount.toString());
   });
