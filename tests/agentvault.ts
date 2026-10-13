@@ -1017,4 +1017,106 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Treasury balance:", treasuryAfter.amount.toString());
     console.log("SPL token deposit verified successfully!");
   });
+
+  it("rejects a zero-amount deposit", async () => {
+    // STEP 1: Derive the owner's token account.
+    const ownerTokenAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      owner,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 2: Derive the Vault treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 3: Record balances before the invalid deposit.
+    const ownerBefore = await getAccount(
+      provider.connection,
+      ownerTokenAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 4: Attempt to deposit zero tokens.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .depositTokens(new BN(0))
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            tokenMint,
+            ownerTokenAccount: ownerTokenAta,
+            treasury: treasuryAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const details = [
+          error?.error?.errorCode?.code ?? "",
+          error?.message ?? "",
+          ...(error?.logs ?? []),
+        ].join("\n");
+
+        // Verify our custom Rust error caused the rejection.
+        assert.match(
+          details,
+          /InvalidDepositAmount|Deposit amount must be greater than zero/i
+        );
+
+        return true;
+      }
+    );
+
+    // STEP 5: Fetch balances after the rejected deposit.
+    const ownerAfter = await getAccount(
+      provider.connection,
+      ownerTokenAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 6: Verify neither balance changed.
+    assert.strictEqual(
+      ownerAfter.amount.toString(),
+      ownerBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    // STEP 7: Verify Vault reservations remain unchanged.
+    const vault = await program.account.vault.fetch(vaultPda);
+
+    assert.ok(vault.totalReserved.eq(new BN(0)));
+
+    console.log("Zero-amount deposit rejected correctly!");
+    console.log("Owner balance:", ownerAfter.amount.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+  });
 });
