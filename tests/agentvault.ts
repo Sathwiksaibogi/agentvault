@@ -1119,4 +1119,114 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Owner balance:", ownerAfter.amount.toString());
     console.log("Treasury balance:", treasuryAfter.amount.toString());
   });
+
+  it("rejects deposits exceeding the owner's token balance", async () => {
+    // STEP 1: Derive the owner's SPL token account.
+    const ownerTokenAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      owner,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 2: Derive the Vault treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 3: Record balances before the attempted deposit.
+    const ownerBefore = await getAccount(
+      provider.connection,
+      ownerTokenAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 4: Request one base unit more than the owner has.
+    const insufficientAmount = new BN(ownerBefore.amount.toString()).add(
+      new BN(1)
+    );
+
+    assert.ok(insufficientAmount.gt(new BN(ownerBefore.amount.toString())));
+
+    // STEP 5: Attempt the deposit.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .depositTokens(insufficientAmount)
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            tokenMint,
+            ownerTokenAccount: ownerTokenAta,
+            treasury: treasuryAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+          "\n"
+        );
+
+        // Confirm the Token Program rejected the transfer
+        // because the source account lacks sufficient funds.
+        assert.match(
+          details,
+          /insufficient funds|insufficient balance|custom program error: 0x1/i
+        );
+
+        return true;
+      }
+    );
+
+    // STEP 6: Fetch balances after the rejected transaction.
+    const ownerAfter = await getAccount(
+      provider.connection,
+      ownerTokenAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 7: Verify the owner's balance did not change.
+    assert.strictEqual(
+      ownerAfter.amount.toString(),
+      ownerBefore.amount.toString()
+    );
+
+    // STEP 8: Verify the treasury received nothing.
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    // STEP 9: Verify Vault reservations remain unchanged.
+    const vault = await program.account.vault.fetch(vaultPda);
+
+    assert.ok(vault.totalReserved.eq(new BN(0)));
+
+    console.log("Insufficient-balance deposit rejected!");
+    console.log("Attempted amount:", insufficientAmount.toString());
+    console.log("Owner balance:", ownerAfter.amount.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+  });
 });
