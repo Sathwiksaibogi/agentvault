@@ -1229,4 +1229,129 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Owner balance:", ownerAfter.amount.toString());
     console.log("Treasury balance:", treasuryAfter.amount.toString());
   });
+
+  it("rejects deposits using an incorrect token mint", async () => {
+    // STEP 1: Create a different, valid SPL token mint.
+    const wrongMint = await createMint(
+      provider.connection,
+      payer,
+      owner,
+      null,
+      6,
+      undefined,
+      { commitment: "confirmed" },
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.ok(!wrongMint.equals(tokenMint));
+
+    // STEP 2: Derive the owner's existing token account.
+    const ownerTokenAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      owner,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 3: Derive the existing treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 4: Verify the Vault's configured mint.
+    const vaultBefore = await program.account.vault.fetch(vaultPda);
+
+    assert.ok(vaultBefore.tokenMint.equals(tokenMint));
+
+    // STEP 5: Record balances before the invalid deposit.
+    const ownerBefore = await getAccount(
+      provider.connection,
+      ownerTokenAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 6: Attempt to use the incorrect mint.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .depositTokens(new BN(100_000))
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            tokenMint: wrongMint,
+            ownerTokenAccount: ownerTokenAta,
+            treasury: treasuryAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const details = [
+          error?.error?.errorCode?.code ?? "",
+          error?.error?.errorCode?.number ?? "",
+          error?.message ?? "",
+          ...(error?.logs ?? []),
+        ].join("\n");
+
+        // Anchor should reject the Vault's mint mismatch.
+        assert.match(
+          details,
+          /ConstraintHasOne|2001|0x7d1|has one constraint/i
+        );
+
+        return true;
+      }
+    );
+
+    // STEP 7: Fetch balances after the rejection.
+    const ownerAfter = await getAccount(
+      provider.connection,
+      ownerTokenAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 8: Verify no tokens moved.
+    assert.strictEqual(
+      ownerAfter.amount.toString(),
+      ownerBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    // STEP 9: Verify the Vault configuration is unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda);
+
+    assert.ok(vaultAfter.tokenMint.equals(tokenMint));
+    assert.ok(vaultAfter.totalReserved.eq(new BN(0)));
+
+    console.log("Incorrect token mint rejected correctly!");
+    console.log("Configured mint:", tokenMint.toBase58());
+    console.log("Rejected mint:", wrongMint.toBase58());
+    console.log("Owner balance:", ownerAfter.amount.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+  });
 });
