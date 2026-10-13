@@ -13,6 +13,8 @@ import {
   getAssociatedTokenAddressSync,
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountInstruction,
+  createMintToInstruction,
 } from "@solana/spl-token";
 import { strict as assert } from "assert";
 
@@ -894,5 +896,125 @@ describe("AgentVault - Vault Initialization", () => {
     assert.strictEqual(treasuryAfter.isInitialized, true);
 
     console.log("Duplicate treasury initialization rejected");
+  });
+
+  it("deposits SPL tokens into the Vault treasury", async () => {
+    // STEP 1: Define amounts in base units.
+    // Our test mint has 6 decimals.
+    const mintAmount = 1_000_000;
+    const depositAmount = new BN(400_000);
+
+    // STEP 2: Derive the owner's token account.
+    const ownerTokenAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      owner,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 3: Derive the Vault's treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 4: Check the treasury's initial balance.
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "0");
+    assert.ok(treasuryBefore.owner.equals(vaultPda));
+
+    // Our existing tests have not created the owner's ATA.
+    const ownerAtaBefore = await provider.connection.getAccountInfo(
+      ownerTokenAta,
+      "processed"
+    );
+
+    assert.strictEqual(ownerAtaBefore, null);
+
+    // STEP 5: Prepare the instruction to create the owner's ATA.
+    const createOwnerAtaIx = createAssociatedTokenAccountInstruction(
+      owner,
+      ownerTokenAta,
+      owner,
+      tokenMint,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 6: Mint test tokens to the owner's ATA.
+    // The test mint authority is the owner.
+    const mintTokensIx = createMintToInstruction(
+      tokenMint,
+      ownerTokenAta,
+      owner,
+      mintAmount,
+      [],
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 7: Execute all three actions in one transaction:
+    //   1. Create owner's token account.
+    //   2. Mint 1 token to the owner.
+    //   3. Deposit 0.4 tokens into the treasury.
+    const tx = await program.methods
+      .depositTokens(depositAmount)
+      .accountsPartial({
+        owner,
+        vault: vaultPda,
+        tokenMint,
+        ownerTokenAccount: ownerTokenAta,
+        treasury: treasuryAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .preInstructions([createOwnerAtaIx, mintTokensIx])
+      .rpc();
+
+    console.log("Deposit transaction:", tx);
+
+    // STEP 8: Read the owner's final token balance.
+    const ownerTokenAccount = await getAccount(
+      provider.connection,
+      ownerTokenAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 9: Read the treasury's final token balance.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 10: Verify the owner's remaining balance.
+    assert.strictEqual(ownerTokenAccount.amount.toString(), "600000");
+
+    // STEP 11: Verify the treasury received the deposit.
+    assert.strictEqual(treasuryAfter.amount.toString(), "400000");
+
+    // STEP 12: Verify the treasury's authority and mint.
+    assert.ok(treasuryAfter.owner.equals(vaultPda));
+    assert.ok(treasuryAfter.mint.equals(tokenMint));
+
+    // STEP 13: Verify Vault accounting remains unchanged.
+    const updatedVault = await program.account.vault.fetch(vaultPda);
+
+    assert.ok(updatedVault.totalReserved.eq(new BN(0)));
+    assert.strictEqual(updatedVault.paused, false);
+
+    console.log("Owner balance:", ownerTokenAccount.amount.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+    console.log("SPL token deposit verified successfully!");
   });
 });
