@@ -10,4 +10,7 @@ pub enum ErrorCode {
 
     #[msg("Insufficient unreserved treasury balance")]
     InsufficientUnreservedFunds,
+
+    #[msg("Deposit amount must be greater than zero")]
+    InvalidDepositAmount,
 }

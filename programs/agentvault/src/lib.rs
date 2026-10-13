@@ -22,4 +22,8 @@ pub mod agentvault {
     pub fn initialize_treasury(ctx: Context<InitializeTreasury>) -> Result<()> {
         instructions::initialize_treasury::handler(ctx)
     }
+
+    pub fn deposit_tokens(ctx: Context<DepositTokens>, amount: u64) -> Result<()> {
+        instructions::deposit_tokens::handler(ctx, amount)
+    }
 }
