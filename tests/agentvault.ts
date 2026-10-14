@@ -2895,4 +2895,149 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Total reserved:", vaultAfter.totalReserved.toString());
     console.log("Treasury balance:", treasuryAfter.amount.toString());
   });
+
+  it("rejects duplicate task creation without modifying the existing policy", async () => {
+    // STEP 1: Derive Agent A's PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 2: Derive Agent A's existing Task 1 PDA.
+    const [taskAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskA1Id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive the canonical treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 4: Read the original task policy.
+    const taskBefore = await program.account.task.fetch(taskAPda, "processed");
+
+    assert.ok(taskBefore.vault.equals(vaultPda));
+    assert.ok(taskBefore.agent.equals(agentAPda));
+    assert.ok(taskBefore.taskId.eq(taskA1Id));
+    assert.ok(taskBefore.budget.eq(taskA1Budget));
+
+    // STEP 5: Record Vault and treasury state.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(vaultBefore.totalReserved.toString(), "250000");
+
+    // STEP 6: Attempt to overwrite Task 1's permissions.
+    const replacementBudget = new BN(50_000);
+    const replacementRecipient = Keypair.generate().publicKey;
+
+    const replacementExpiry = new BN(
+      Math.floor(Date.now() / 1000) + 48 * 60 * 60
+    );
+
+    assert.ok(!replacementRecipient.equals(taskBefore.recipient));
+
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .createTask(
+            taskA1Id,
+            replacementBudget,
+            replacementRecipient,
+            replacementExpiry
+          )
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            agent: agentAPda,
+            tokenMint,
+            treasury: treasuryAta,
+            task: taskAPda,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const details = [
+          error?.error?.errorCode?.code ?? "",
+          error?.message ?? "",
+          ...(error?.logs ?? []),
+        ].join("\n");
+
+        // Account initialization must fail because
+        // this Task PDA is already initialized.
+        assert.match(
+          details,
+          /already in use|already initialized|already exists|AccountAlreadyInitialized|AccountDiscriminatorAlreadySet/i
+        );
+
+        return true;
+      }
+    );
+
+    // STEP 7: Verify the existing task still exists.
+    const taskAfter = await program.account.task.fetch(taskAPda, "processed");
+
+    // STEP 8: Verify the policy was not overwritten.
+    assert.ok(taskAfter.vault.equals(taskBefore.vault));
+    assert.ok(taskAfter.agent.equals(taskBefore.agent));
+    assert.ok(taskAfter.taskId.eq(taskBefore.taskId));
+
+    assert.ok(taskAfter.recipient.equals(taskBefore.recipient));
+    assert.ok(taskAfter.budget.eq(taskBefore.budget));
+    assert.ok(taskAfter.spent.eq(taskBefore.spent));
+
+    assert.ok(taskAfter.expiresAt.eq(taskBefore.expiresAt));
+    assert.ok(taskAfter.nextNonce.eq(taskBefore.nextNonce));
+
+    assert.strictEqual(taskAfter.active, taskBefore.active);
+    assert.strictEqual(taskAfter.bump, taskBefore.bump);
+
+    // STEP 9: Verify the total reservation did not change.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+
+    // STEP 10: Verify the treasury tokens did not change.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    console.log("Duplicate task creation rejected!");
+    console.log("Original task PDA:", taskAPda.toBase58());
+    console.log("Original budget:", taskAfter.budget.toString());
+    console.log("Original recipient:", taskAfter.recipient.toBase58());
+    console.log("Total reserved:", vaultAfter.totalReserved.toString());
+  });
 });
