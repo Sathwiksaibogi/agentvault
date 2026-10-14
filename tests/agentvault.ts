@@ -3040,4 +3040,137 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Original recipient:", taskAfter.recipient.toBase58());
     console.log("Total reserved:", vaultAfter.totalReserved.toString());
   });
+
+  it("rejects task creation with a zero budget", async () => {
+    // STEP 1: Define invalid task parameters.
+    const taskId = new BN(2);
+    const zeroBudget = new BN(0);
+
+    const recipient = Keypair.generate().publicKey;
+
+    const expiresAt = new BN(Math.floor(Date.now() / 1000) + 24 * 60 * 60);
+
+    // STEP 2: Derive Agent A's PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive the proposed Task PDA.
+    const [taskPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 4: Derive the treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 5: Confirm the task doesn't exist.
+    const taskBefore = await provider.connection.getAccountInfo(
+      taskPda,
+      "processed"
+    );
+
+    assert.strictEqual(taskBefore, null);
+
+    // STEP 6: Record financial state before rejection.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(vaultBefore.totalReserved.toString(), "250000");
+
+    // STEP 7: Attempt to create a zero-budget task.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .createTask(taskId, zeroBudget, recipient, expiresAt)
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            agent: agentAPda,
+            tokenMint,
+            treasury: treasuryAta,
+            task: taskPda,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const code = error?.error?.errorCode?.code;
+
+        if (code) {
+          assert.strictEqual(code, "InvalidTaskBudget");
+        } else {
+          const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+            "\n"
+          );
+
+          assert.match(
+            details,
+            /InvalidTaskBudget|Task budget must be greater than zero/i
+          );
+        }
+
+        return true;
+      }
+    );
+
+    // STEP 8: Verify no Task account was created.
+    const taskAfter = await provider.connection.getAccountInfo(
+      taskPda,
+      "processed"
+    );
+
+    assert.strictEqual(taskAfter, null, "Zero-budget task must not exist");
+
+    // STEP 9: Verify existing reservations are unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+
+    assert.ok(vaultAfter.owner.equals(vaultBefore.owner));
+    assert.strictEqual(vaultAfter.paused, vaultBefore.paused);
+
+    // STEP 10: Verify treasury funds are unchanged.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    console.log("Zero-budget task correctly rejected!");
+    console.log("Rejected budget:", zeroBudget.toString());
+    console.log("Total reserved:", vaultAfter.totalReserved.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+  });
 });
