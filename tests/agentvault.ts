@@ -3746,4 +3746,168 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Agent A nonce preserved:", taskAAfter.nextNonce.toString());
     console.log("Treasury balance preserved:", treasuryAfter.amount.toString());
   });
+
+  it("rejects replaying an already-used payment nonce", async () => {
+    // STEP 1: Repeat Agent A's previously authorized payment.
+    const replayAmount = new BN(40_000);
+    const usedNonce = new BN(0);
+    const expectedNonce = new BN(1);
+
+    // STEP 2: Derive Agent A's PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive Agent A's Task 1 PDA.
+    const [taskAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskA1Id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 4: Derive the shared treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 5: Derive the approved recipient ATA.
+    const recipientAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      taskA1Recipient,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 6: Verify the previous payment was executed.
+    const taskBefore = await program.account.task.fetch(taskAPda, "processed");
+
+    assert.ok(taskBefore.spent.eq(new BN(40_000)));
+    assert.ok(taskBefore.nextNonce.eq(expectedNonce));
+
+    // The old nonce must no longer be valid.
+    assert.ok(!taskBefore.nextNonce.eq(usedNonce));
+
+    // STEP 7: Record financial state before replay.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const recipientBefore = await getAccount(
+      provider.connection,
+      recipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "360000");
+
+    assert.strictEqual(recipientBefore.amount.toString(), "40000");
+
+    assert.ok(vaultBefore.totalReserved.eq(new BN(210_000)));
+
+    // STEP 8: Attempt a new transaction using nonce 0.
+    // Agent A signs correctly, but the nonce is stale.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .executeTaskPayment(replayAmount, usedNonce)
+          .accountsPartial({
+            agentAuthority: agentAKeypair.publicKey,
+            vault: vaultPda,
+            agent: agentAPda,
+            task: taskAPda,
+            tokenMint,
+            treasury: treasuryAta,
+            recipient: taskA1Recipient,
+            recipientToken: recipientAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([agentAKeypair])
+          .rpc();
+      },
+      (error: any) => {
+        const code = error?.error?.errorCode?.code;
+
+        if (code) {
+          assert.strictEqual(code, "InvalidPaymentNonce");
+        } else {
+          const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+            "\n"
+          );
+
+          assert.match(details, /InvalidPaymentNonce|Invalid payment nonce/i);
+        }
+
+        return true;
+      }
+    );
+
+    // STEP 9: Verify no additional tokens were transferred.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const recipientAfter = await getAccount(
+      provider.connection,
+      recipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      recipientAfter.amount.toString(),
+      recipientBefore.amount.toString()
+    );
+
+    // STEP 10: Verify task spending and nonce are unchanged.
+    const taskAfter = await program.account.task.fetch(taskAPda, "processed");
+
+    assert.ok(taskAfter.spent.eq(taskBefore.spent));
+
+    assert.ok(taskAfter.nextNonce.eq(taskBefore.nextNonce));
+
+    assert.ok(taskAfter.budget.eq(taskBefore.budget));
+    assert.ok(taskAfter.agent.equals(taskBefore.agent));
+
+    // STEP 11: Verify reservations are unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+
+    console.log("Payment replay correctly rejected!");
+    console.log("Rejected nonce:", usedNonce.toString());
+    console.log("Expected nonce:", taskAfter.nextNonce.toString());
+    console.log("Total spent:", taskAfter.spent.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+    console.log("Recipient balance:", recipientAfter.amount.toString());
+  });
 });
