@@ -6,3 +6,7 @@ node_modules
 test-ledger
 .yarn
 .surfpool
+
+# AgentVault local demo state and private keys
+demo/local/
+demo/.env
