@@ -3910,4 +3910,207 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Treasury balance:", treasuryAfter.amount.toString());
     console.log("Recipient balance:", recipientAfter.amount.toString());
   });
+
+  it("rejects payment to an unauthorized recipient", async () => {
+    // STEP 1: Define an otherwise valid payment.
+    const amount = new BN(10_000);
+    const nonce = new BN(1);
+
+    // Use the Vault owner's wallet as an unauthorized recipient.
+    const unauthorizedRecipient = owner;
+
+    assert.ok(!unauthorizedRecipient.equals(taskA1Recipient));
+
+    // STEP 2: Derive Agent A and its Task PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    const [taskAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskA1Id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive the shared treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 4: Derive the legitimate recipient's ATA.
+    const approvedRecipientAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      taskA1Recipient,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 5: Derive the unauthorized recipient's ATA.
+    // This token account already exists from our deposit tests.
+    const unauthorizedRecipientAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      unauthorizedRecipient,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 6: Verify Agent A's existing task policy.
+    const taskBefore = await program.account.task.fetch(taskAPda, "processed");
+
+    assert.ok(taskBefore.agent.equals(agentAPda));
+    assert.ok(taskBefore.recipient.equals(taskA1Recipient));
+    assert.ok(taskBefore.spent.eq(new BN(40_000)));
+    assert.ok(taskBefore.nextNonce.eq(nonce));
+    assert.strictEqual(taskBefore.active, true);
+
+    // This payment is within Agent A's remaining budget.
+    assert.ok(taskBefore.spent.add(amount).lte(taskBefore.budget));
+
+    // STEP 7: Record financial state before the attack.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const approvedBefore = await getAccount(
+      provider.connection,
+      approvedRecipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const unauthorizedBefore = await getAccount(
+      provider.connection,
+      unauthorizedRecipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "360000");
+
+    assert.strictEqual(approvedBefore.amount.toString(), "40000");
+
+    assert.strictEqual(unauthorizedBefore.amount.toString(), "600000");
+
+    assert.ok(vaultBefore.totalReserved.eq(new BN(210_000)));
+
+    // STEP 8: Attempt to redirect Agent A's payment.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .executeTaskPayment(amount, nonce)
+          .accountsPartial({
+            agentAuthority: agentAKeypair.publicKey,
+            vault: vaultPda,
+            agent: agentAPda,
+            task: taskAPda,
+            tokenMint,
+            treasury: treasuryAta,
+
+            // ATTACK: Substitute a different recipient.
+            recipient: unauthorizedRecipient,
+            recipientToken: unauthorizedRecipientAta,
+
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([agentAKeypair])
+          .rpc();
+      },
+      (error: any) => {
+        const code = error?.error?.errorCode?.code;
+
+        if (code) {
+          assert.strictEqual(code, "ConstraintAddress");
+        } else {
+          const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+            "\n"
+          );
+
+          assert.match(details, /ConstraintAddress|address constraint/i);
+        }
+
+        return true;
+      }
+    );
+
+    // STEP 9: Read the token balances after rejection.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const approvedAfter = await getAccount(
+      provider.connection,
+      approvedRecipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const unauthorizedAfter = await getAccount(
+      provider.connection,
+      unauthorizedRecipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 10: Verify no tokens moved.
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      approvedAfter.amount.toString(),
+      approvedBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      unauthorizedAfter.amount.toString(),
+      unauthorizedBefore.amount.toString()
+    );
+
+    // STEP 11: Verify the task state did not change.
+    const taskAfter = await program.account.task.fetch(taskAPda, "processed");
+
+    assert.ok(taskAfter.spent.eq(taskBefore.spent));
+    assert.ok(taskAfter.nextNonce.eq(taskBefore.nextNonce));
+    assert.ok(taskAfter.budget.eq(taskBefore.budget));
+    assert.ok(taskAfter.recipient.equals(taskBefore.recipient));
+    assert.strictEqual(taskAfter.active, taskBefore.active);
+
+    // STEP 12: Verify the Vault reservation is unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+
+    console.log("Unauthorized recipient correctly rejected!");
+    console.log("Approved recipient:", taskA1Recipient.toBase58());
+    console.log("Rejected recipient:", unauthorizedRecipient.toBase58());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+    console.log("Vault reserved:", vaultAfter.totalReserved.toString());
+    console.log("Payment nonce preserved:", taskAfter.nextNonce.toString());
+  });
 });
