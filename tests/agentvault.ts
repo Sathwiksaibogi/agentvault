@@ -2254,4 +2254,143 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Expected Agent PDA:", correctAgentPda.toBase58());
     console.log("Rejected Agent PDA:", wrongAgentPda.toBase58());
   });
+
+  it("allows the same agent authority under different Vaults", async () => {
+    // STEP 1: Use the existing Agent A signing identity.
+    const agentAuthority = agentAKeypair.publicKey;
+
+    // STEP 2: Derive Agent A's existing registration
+    // under our primary Vault.
+    const [primaryAgentPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("agent"), vaultPda.toBuffer(), agentAuthority.toBuffer()],
+      program.programId
+    );
+
+    const primaryAgentBefore = await program.account.agent.fetch(
+      primaryAgentPda,
+      "processed"
+    );
+
+    assert.ok(primaryAgentBefore.vault.equals(vaultPda));
+    assert.ok(primaryAgentBefore.authority.equals(agentAuthority));
+
+    // STEP 3: Create a second Vault ID.
+    // Choose an unused ID for this integration test.
+    const secondVaultId = new BN(2700);
+
+    const [secondVaultPda, secondVaultBump] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("vault"),
+        owner.toBuffer(),
+        secondVaultId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    assert.ok(!secondVaultPda.equals(vaultPda));
+
+    // STEP 4: Initialize the second Vault.
+    await program.methods
+      .initializeVault(secondVaultId)
+      .accountsPartial({
+        owner,
+        vault: secondVaultPda,
+        tokenMint,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    const secondVault = await program.account.vault.fetch(
+      secondVaultPda,
+      "processed"
+    );
+
+    assert.ok(secondVault.owner.equals(owner));
+    assert.ok(secondVault.tokenMint.equals(tokenMint));
+    assert.ok(secondVault.vaultId.eq(secondVaultId));
+    assert.strictEqual(secondVault.bump, secondVaultBump);
+
+    // STEP 5: Derive Agent A's PDA under Vault 2.
+    const [secondAgentPda, secondAgentBump] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        secondVaultPda.toBuffer(),
+        agentAuthority.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // Same signing authority, different Vault:
+    // the Agent PDA must be different.
+    assert.ok(!secondAgentPda.equals(primaryAgentPda));
+
+    const agentBefore = await provider.connection.getAccountInfo(
+      secondAgentPda,
+      "processed"
+    );
+
+    assert.strictEqual(agentBefore, null);
+
+    // STEP 6: Register the same Agent A authority
+    // under the second Vault.
+    const tx = await program.methods
+      .registerAgent(agentAuthority)
+      .accountsPartial({
+        owner,
+        vault: secondVaultPda,
+        agent: secondAgentPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    console.log("Second Vault registration transaction:", tx);
+
+    // STEP 7: Fetch Agent A's new registration.
+    const secondAgent = await program.account.agent.fetch(
+      secondAgentPda,
+      "processed"
+    );
+
+    assert.ok(secondAgent.vault.equals(secondVaultPda));
+    assert.ok(secondAgent.authority.equals(agentAuthority));
+    assert.strictEqual(secondAgent.active, true);
+    assert.strictEqual(secondAgent.bump, secondAgentBump);
+
+    // STEP 8: Verify the first registration is unaffected.
+    const primaryAgentAfter = await program.account.agent.fetch(
+      primaryAgentPda,
+      "processed"
+    );
+
+    assert.ok(primaryAgentAfter.vault.equals(vaultPda));
+
+    assert.ok(primaryAgentAfter.authority.equals(agentAuthority));
+
+    assert.strictEqual(primaryAgentAfter.active, primaryAgentBefore.active);
+
+    assert.strictEqual(primaryAgentAfter.bump, primaryAgentBefore.bump);
+
+    // STEP 9: Verify the two Vaults remain independent.
+    const primaryVault = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const updatedSecondVault = await program.account.vault.fetch(
+      secondVaultPda,
+      "processed"
+    );
+
+    assert.ok(primaryVault.totalReserved.eq(new BN(0)));
+
+    assert.ok(updatedSecondVault.totalReserved.eq(new BN(0)));
+
+    assert.strictEqual(primaryVault.paused, false);
+    assert.strictEqual(updatedSecondVault.paused, false);
+
+    console.log("Same agent registered under two Vaults!");
+    console.log("Agent authority:", agentAuthority.toBase58());
+    console.log("Vault 1 Agent PDA:", primaryAgentPda.toBase58());
+    console.log("Vault 2 Agent PDA:", secondAgentPda.toBase58());
+  });
 });
