@@ -2122,4 +2122,136 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Rejected authority:", invalidAuthority.toBase58());
     console.log("No invalid Agent account was created.");
   });
+
+  it("rejects registration with an incorrect Agent PDA", async () => {
+    // STEP 1: Create two distinct agent identities.
+    const agentC = Keypair.generate();
+    const otherAgent = Keypair.generate();
+
+    assert.ok(!agentC.publicKey.equals(otherAgent.publicKey));
+
+    // STEP 2: Derive the correct PDA for Agent C.
+    const [correctAgentPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("agent"), vaultPda.toBuffer(), agentC.publicKey.toBuffer()],
+      program.programId
+    );
+
+    // STEP 3: Derive a different PDA using another authority.
+    // This is the address we will deliberately substitute.
+    const [wrongAgentPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        otherAgent.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // The addresses must be different.
+    assert.ok(!correctAgentPda.equals(wrongAgentPda));
+
+    // STEP 4: Verify neither account exists.
+    const correctBefore = await provider.connection.getAccountInfo(
+      correctAgentPda,
+      "processed"
+    );
+
+    const wrongBefore = await provider.connection.getAccountInfo(
+      wrongAgentPda,
+      "processed"
+    );
+
+    assert.strictEqual(correctBefore, null);
+    assert.strictEqual(wrongBefore, null);
+
+    // STEP 5: Record the original Vault state.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    // STEP 6: Attempt to register Agent C using
+    // the PDA derived from another agent's authority.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .registerAgent(agentC.publicKey)
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            agent: wrongAgentPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const errorCode = error?.error?.errorCode?.code;
+
+        if (errorCode) {
+          assert.strictEqual(errorCode, "ConstraintSeeds");
+        } else {
+          const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+            "\n"
+          );
+
+          assert.match(details, /ConstraintSeeds|seeds constraint|0x7d6|2006/i);
+        }
+
+        return true;
+      }
+    );
+
+    // STEP 7: Verify no Agent account was created.
+    const correctAfter = await provider.connection.getAccountInfo(
+      correctAgentPda,
+      "processed"
+    );
+
+    const wrongAfter = await provider.connection.getAccountInfo(
+      wrongAgentPda,
+      "processed"
+    );
+
+    assert.strictEqual(
+      correctAfter,
+      null,
+      "Correct Agent PDA must remain uninitialized"
+    );
+
+    assert.strictEqual(
+      wrongAfter,
+      null,
+      "Substituted Agent PDA must remain uninitialized"
+    );
+
+    // STEP 8: Verify the existing Agent A remains valid.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    const agentA = await program.account.agent.fetch(agentAPda, "processed");
+
+    assert.ok(agentA.vault.equals(vaultPda));
+    assert.ok(agentA.authority.equals(agentAKeypair.publicKey));
+    assert.strictEqual(agentA.active, true);
+
+    // STEP 9: Verify the Vault remains unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.owner.equals(vaultBefore.owner));
+    assert.ok(vaultAfter.tokenMint.equals(vaultBefore.tokenMint));
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+
+    assert.strictEqual(vaultAfter.paused, vaultBefore.paused);
+
+    console.log("Incorrect Agent PDA rejected correctly!");
+    console.log("Expected Agent PDA:", correctAgentPda.toBase58());
+    console.log("Rejected Agent PDA:", wrongAgentPda.toBase58());
+  });
 });
