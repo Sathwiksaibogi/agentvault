@@ -31,6 +31,9 @@ describe("AgentVault - Vault Initialization", () => {
   const payer = (provider.wallet as anchor.Wallet).payer;
 
   const vaultId = new BN(1);
+  // Test identities for independent AI agents.
+  const agentAKeypair = Keypair.generate();
+  const agentBKeypair = Keypair.generate();
 
   const [vaultPda, vaultBump] = PublicKey.findProgramAddressSync(
     [
@@ -1670,7 +1673,7 @@ describe("AgentVault - Vault Initialization", () => {
 
   it("registers the first AI agent under the Vault", async () => {
     // STEP 1: Generate a signing identity for Agent A.
-    const agentAuthority = Keypair.generate();
+    const agentAuthority = agentAKeypair;
 
     // The agent must be different from the Vault owner.
     assert.ok(!agentAuthority.publicKey.equals(owner));
@@ -1750,5 +1753,100 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Agent A registered successfully!");
     console.log("Agent active:", agent.active);
     console.log("Agent bump:", agent.bump);
+  });
+
+  it("registers a second independent agent under the same Vault", async () => {
+    // STEP 1: Confirm Agent A and Agent B have different identities.
+    assert.ok(!agentAKeypair.publicKey.equals(agentBKeypair.publicKey));
+
+    // STEP 2: Derive Agent A's existing PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive Agent B's PDA.
+    const [agentBPda, agentBBump] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentBKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // Both agents belong to the same Vault,
+    // but must have different PDA addresses.
+    assert.ok(!agentAPda.equals(agentBPda));
+
+    // STEP 4: Verify Agent A already exists.
+    const agentABefore = await program.account.agent.fetch(
+      agentAPda,
+      "processed"
+    );
+
+    assert.ok(agentABefore.vault.equals(vaultPda));
+    assert.ok(agentABefore.authority.equals(agentAKeypair.publicKey));
+    assert.strictEqual(agentABefore.active, true);
+
+    // STEP 5: Verify Agent B does not exist yet.
+    const before = await provider.connection.getAccountInfo(
+      agentBPda,
+      "processed"
+    );
+
+    assert.strictEqual(before, null);
+
+    // STEP 6: Register Agent B.
+    const tx = await program.methods
+      .registerAgent(agentBKeypair.publicKey)
+      .accountsPartial({
+        owner,
+        vault: vaultPda,
+        agent: agentBPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    console.log("Agent B registration transaction:", tx);
+
+    // STEP 7: Fetch both registered agents.
+    const agentAAfter = await program.account.agent.fetch(
+      agentAPda,
+      "processed"
+    );
+
+    const agentB = await program.account.agent.fetch(agentBPda, "processed");
+
+    // STEP 8: Verify Agent B belongs to the same Vault.
+    assert.ok(agentB.vault.equals(vaultPda));
+
+    // STEP 9: Verify Agent B has its own authority.
+    assert.ok(agentB.authority.equals(agentBKeypair.publicKey));
+
+    assert.strictEqual(agentB.active, true);
+    assert.strictEqual(agentB.bump, agentBBump);
+
+    // STEP 10: Verify Agent A was not modified.
+    assert.ok(agentAAfter.vault.equals(agentABefore.vault));
+    assert.ok(agentAAfter.authority.equals(agentABefore.authority));
+
+    assert.strictEqual(agentAAfter.active, agentABefore.active);
+
+    assert.strictEqual(agentAAfter.bump, agentABefore.bump);
+
+    // STEP 11: Verify Vault accounting is unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.totalReserved.eq(new BN(0)));
+    assert.strictEqual(vaultAfter.paused, false);
+
+    console.log("Agent A PDA:", agentAPda.toBase58());
+    console.log("Agent B PDA:", agentBPda.toBase58());
+    console.log("Both agents registered under the same Vault!");
   });
 });
