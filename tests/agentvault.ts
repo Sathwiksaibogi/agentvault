@@ -4811,4 +4811,217 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Vault total reserved:", vaultAfter.totalReserved.toString());
     console.log("Unreserved funds:", availableAfter.toString());
   });
+
+  it("allows the owner to revoke an expired task and release unused funds", async () => {
+    // STEP 1: Derive Agent A and Agent B PDAs.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    const [agentBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentBKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 2: Derive the expired Task 4 PDA.
+    // This task was created in Test 39.
+    const expiredTaskId = new BN(4);
+
+    const [expiredTaskPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        expiredTaskId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive the existing active Task PDAs.
+    const [taskAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskA1Id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    const [taskBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentBPda.toBuffer(),
+        new BN(1).toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 4: Derive the canonical treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 5: Read the expired task before revocation.
+    const taskBefore = await program.account.task.fetch(
+      expiredTaskPda,
+      "processed"
+    );
+
+    assert.ok(taskBefore.vault.equals(vaultPda));
+    assert.ok(taskBefore.agent.equals(agentAPda));
+    assert.ok(taskBefore.budget.eq(new BN(10_000)));
+    assert.ok(taskBefore.spent.eq(new BN(0)));
+    assert.ok(taskBefore.nextNonce.eq(new BN(0)));
+
+    // Expired does not automatically mean inactive.
+    assert.strictEqual(taskBefore.active, true);
+
+    // STEP 6: Calculate the unused reservation.
+    const unusedBudget = taskBefore.budget.sub(taskBefore.spent);
+
+    assert.ok(unusedBudget.eq(new BN(10_000)));
+
+    // STEP 7: Record other tasks before revocation.
+    const taskABefore = await program.account.task.fetch(taskAPda, "processed");
+
+    const taskBBefore = await program.account.task.fetch(taskBPda, "processed");
+
+    assert.ok(taskABefore.spent.eq(new BN(40_000)));
+    assert.ok(taskBBefore.spent.eq(new BN(30_000)));
+
+    // STEP 8: Record the Vault and treasury state.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.ok(vaultBefore.totalReserved.eq(new BN(190_000)));
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "330000");
+
+    // Calculate unreserved funds before revocation.
+    const unreservedBefore = new BN(treasuryBefore.amount.toString()).sub(
+      vaultBefore.totalReserved
+    );
+
+    assert.strictEqual(unreservedBefore.toString(), "140000");
+
+    // STEP 9: Owner revokes the expired task.
+    const tx = await program.methods
+      .revokeTask()
+      .accountsPartial({
+        owner,
+        vault: vaultPda,
+        agent: agentAPda,
+        task: expiredTaskPda,
+      })
+      .rpc();
+
+    console.log("Task revocation transaction:", tx);
+
+    // STEP 10: Verify the task is now inactive.
+    const taskAfter = await program.account.task.fetch(
+      expiredTaskPda,
+      "processed"
+    );
+
+    assert.strictEqual(taskAfter.active, false);
+
+    // Original task policy and history must remain.
+    assert.ok(taskAfter.budget.eq(taskBefore.budget));
+    assert.ok(taskAfter.spent.eq(taskBefore.spent));
+
+    assert.ok(taskAfter.nextNonce.eq(taskBefore.nextNonce));
+
+    assert.ok(taskAfter.agent.equals(taskBefore.agent));
+    assert.ok(taskAfter.vault.equals(taskBefore.vault));
+
+    assert.ok(taskAfter.recipient.equals(taskBefore.recipient));
+
+    assert.ok(taskAfter.expiresAt.eq(taskBefore.expiresAt));
+
+    // STEP 11: Verify the reserved budget was released.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    const expectedReserved = vaultBefore.totalReserved.sub(unusedBudget);
+
+    assert.ok(vaultAfter.totalReserved.eq(expectedReserved));
+
+    assert.strictEqual(vaultAfter.totalReserved.toString(), "180000");
+
+    assert.ok(vaultAfter.owner.equals(vaultBefore.owner));
+
+    // STEP 12: Verify treasury tokens did not move.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    assert.strictEqual(treasuryAfter.amount.toString(), "330000");
+
+    // STEP 13: Verify released funds are now available.
+    const unreservedAfter = new BN(treasuryAfter.amount.toString()).sub(
+      vaultAfter.totalReserved
+    );
+
+    const expectedUnreserved = unreservedBefore.add(unusedBudget);
+
+    assert.ok(unreservedAfter.eq(expectedUnreserved));
+
+    assert.strictEqual(unreservedAfter.toString(), "150000");
+
+    // STEP 14: Verify Agent A's existing task is unchanged.
+    const taskAAfter = await program.account.task.fetch(taskAPda, "processed");
+
+    assert.ok(taskAAfter.budget.eq(taskABefore.budget));
+    assert.ok(taskAAfter.spent.eq(taskABefore.spent));
+
+    assert.ok(taskAAfter.nextNonce.eq(taskABefore.nextNonce));
+
+    assert.strictEqual(taskAAfter.active, taskABefore.active);
+
+    // STEP 15: Verify Agent B's task is unchanged.
+    const taskBAfter = await program.account.task.fetch(taskBPda, "processed");
+
+    assert.ok(taskBAfter.budget.eq(taskBBefore.budget));
+    assert.ok(taskBAfter.spent.eq(taskBBefore.spent));
+
+    assert.ok(taskBAfter.nextNonce.eq(taskBBefore.nextNonce));
+
+    assert.strictEqual(taskBAfter.active, taskBBefore.active);
+
+    // STEP 16: Print verified results.
+    console.log("Expired task revoked successfully!");
+    console.log("Task active:", taskAfter.active);
+    console.log("Unused budget released:", unusedBudget.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+    console.log("Vault total reserved:", vaultAfter.totalReserved.toString());
+    console.log("Unreserved funds:", unreservedAfter.toString());
+  });
 });
