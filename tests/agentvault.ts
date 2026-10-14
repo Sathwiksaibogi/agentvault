@@ -5368,4 +5368,189 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Vault reserved:", vaultAfter.totalReserved.toString());
     console.log("Treasury balance:", treasuryAfter.amount.toString());
   });
+
+  it("releases only the unused budget of a partially spent task", async () => {
+    // STEP 1: Derive the two Agent PDAs.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    const [agentBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentBKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 2: Derive Agent A's partially spent Task 1.
+    const [taskAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskA1Id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive Agent B's active Task 1.
+    const [taskBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentBPda.toBuffer(),
+        new BN(1).toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 4: Derive the canonical treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 5: Read both tasks.
+    const taskABefore = await program.account.task.fetch(taskAPda, "processed");
+
+    const taskBBefore = await program.account.task.fetch(taskBPda, "processed");
+
+    // Verify Agent A's task was partially spent.
+    assert.ok(taskABefore.agent.equals(agentAPda));
+    assert.ok(taskABefore.budget.eq(new BN(150_000)));
+    assert.ok(taskABefore.spent.eq(new BN(40_000)));
+    assert.ok(taskABefore.nextNonce.eq(new BN(1)));
+    assert.strictEqual(taskABefore.active, true);
+
+    // Agent B must retain its separate reservation.
+    assert.ok(taskBBefore.agent.equals(agentBPda));
+    assert.ok(taskBBefore.budget.eq(new BN(100_000)));
+    assert.ok(taskBBefore.spent.eq(new BN(30_000)));
+    assert.strictEqual(taskBBefore.active, true);
+
+    // STEP 6: Calculate Agent A's unused budget.
+    const unusedBudget = taskABefore.budget.sub(taskABefore.spent);
+
+    assert.strictEqual(unusedBudget.toString(), "110000");
+
+    // STEP 7: Snapshot Vault and treasury balances.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.ok(vaultBefore.totalReserved.eq(new BN(180_000)));
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "330000");
+
+    const availableBefore = new BN(treasuryBefore.amount.toString()).sub(
+      vaultBefore.totalReserved
+    );
+
+    assert.strictEqual(availableBefore.toString(), "150000");
+
+    // STEP 8: The Vault owner revokes Agent A's Task 1.
+    const tx = await program.methods
+      .revokeTask()
+      .accountsPartial({
+        owner,
+        vault: vaultPda,
+        agent: agentAPda,
+        task: taskAPda,
+      })
+      .rpc();
+
+    console.log("Partial-budget revocation tx:", tx);
+
+    // STEP 9: Verify Agent A's task is inactive.
+    const taskAAfter = await program.account.task.fetch(taskAPda, "processed");
+
+    assert.strictEqual(taskAAfter.active, false);
+
+    // Revocation must preserve task history.
+    assert.ok(taskAAfter.budget.eq(taskABefore.budget));
+
+    assert.ok(taskAAfter.spent.eq(taskABefore.spent));
+
+    assert.ok(taskAAfter.nextNonce.eq(taskABefore.nextNonce));
+
+    assert.ok(taskAAfter.recipient.equals(taskABefore.recipient));
+
+    assert.ok(taskAAfter.agent.equals(taskABefore.agent));
+
+    // STEP 10: Verify the reservation decreased
+    // by exactly the UNUSED task budget.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    const expectedReserved = vaultBefore.totalReserved.sub(unusedBudget);
+
+    assert.ok(vaultAfter.totalReserved.eq(expectedReserved));
+
+    assert.strictEqual(vaultAfter.totalReserved.toString(), "70000");
+
+    // STEP 11: Verify no treasury tokens moved.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    // STEP 12: Verify released funds are available.
+    const availableAfter = new BN(treasuryAfter.amount.toString()).sub(
+      vaultAfter.totalReserved
+    );
+
+    assert.ok(availableAfter.eq(availableBefore.add(unusedBudget)));
+
+    assert.strictEqual(availableAfter.toString(), "260000");
+
+    // STEP 13: Verify Agent B's task is unaffected.
+    const taskBAfter = await program.account.task.fetch(taskBPda, "processed");
+
+    assert.ok(taskBAfter.budget.eq(taskBBefore.budget));
+
+    assert.ok(taskBAfter.spent.eq(taskBBefore.spent));
+
+    assert.ok(taskBAfter.nextNonce.eq(taskBBefore.nextNonce));
+
+    assert.strictEqual(taskBAfter.active, true);
+
+    // STEP 14: Agent B's remaining budget should
+    // equal the Vault's remaining reserved funds.
+    const agentBRemaining = taskBAfter.budget.sub(taskBAfter.spent);
+
+    assert.ok(vaultAfter.totalReserved.eq(agentBRemaining));
+
+    assert.strictEqual(agentBRemaining.toString(), "70000");
+
+    console.log("Partially spent task revoked successfully!");
+    console.log("Task active:", taskAAfter.active);
+    console.log("Previously spent:", taskAAfter.spent.toString());
+    console.log("Unused budget released:", unusedBudget.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+    console.log("Vault total reserved:", vaultAfter.totalReserved.toString());
+    console.log("Available funds:", availableAfter.toString());
+    console.log("Agent B remaining budget:", agentBRemaining.toString());
+  });
 });
