@@ -1667,4 +1667,88 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Treasury balance:", treasuryAfter.amount.toString());
     console.log("Substitute balance:", substituteAfter.amount.toString());
   });
+
+  it("registers the first AI agent under the Vault", async () => {
+    // STEP 1: Generate a signing identity for Agent A.
+    const agentAuthority = Keypair.generate();
+
+    // The agent must be different from the Vault owner.
+    assert.ok(!agentAuthority.publicKey.equals(owner));
+
+    // STEP 2: Derive Agent A's PDA.
+    const [agentPda, agentBump] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAuthority.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    console.log("Agent A authority:", agentAuthority.publicKey.toBase58());
+    console.log("Agent A PDA:", agentPda.toBase58());
+
+    // STEP 3: Verify the Agent account does not exist.
+    const before = await provider.connection.getAccountInfo(
+      agentPda,
+      "processed"
+    );
+
+    assert.strictEqual(
+      before,
+      null,
+      "Agent must not exist before registration"
+    );
+
+    // STEP 4: Register Agent A.
+    // Only the Vault owner signs this transaction.
+    const tx = await program.methods
+      .registerAgent(agentAuthority.publicKey)
+      .accountsPartial({
+        owner,
+        vault: vaultPda,
+        agent: agentPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    console.log("Agent registration transaction:", tx);
+
+    // STEP 5: Fetch the newly registered Agent account.
+    const agent = await program.account.agent.fetch(agentPda, "processed");
+
+    // STEP 6: Verify the Agent belongs to the correct Vault.
+    assert.ok(
+      agent.vault.equals(vaultPda),
+      "Agent must belong to the expected Vault"
+    );
+
+    // STEP 7: Verify the registered signing authority.
+    assert.ok(
+      agent.authority.equals(agentAuthority.publicKey),
+      "Agent authority must match the registered public key"
+    );
+
+    // STEP 8: Verify the Agent is active.
+    assert.strictEqual(
+      agent.active,
+      true,
+      "Newly registered Agent must be active"
+    );
+
+    // STEP 9: Verify the PDA bump.
+    assert.strictEqual(agent.bump, agentBump);
+
+    // STEP 10: Verify registration did not modify Vault state.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.owner.equals(owner));
+    assert.ok(vaultAfter.tokenMint.equals(tokenMint));
+    assert.ok(vaultAfter.totalReserved.eq(new BN(0)));
+    assert.strictEqual(vaultAfter.paused, false);
+
+    console.log("Agent A registered successfully!");
+    console.log("Agent active:", agent.active);
+    console.log("Agent bump:", agent.bump);
+  });
 });
