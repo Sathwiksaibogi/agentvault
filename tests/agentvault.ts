@@ -2528,4 +2528,183 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Available balance:", availableBalance.toString());
     console.log("Agent A task created successfully!");
   });
+
+  it("reserves an independent task budget for Agent B", async () => {
+    // STEP 1: Define Agent B's task parameters.
+    const taskBId = new BN(1);
+    const taskBBudget = new BN(100_000);
+    const taskBRecipient = Keypair.generate().publicKey;
+
+    const taskBExpiresAt = new BN(Math.floor(Date.now() / 1000) + 24 * 60 * 60);
+
+    // STEP 2: Derive the registered Agent A PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive the registered Agent B PDA.
+    const [agentBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentBKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    assert.ok(!agentAPda.equals(agentBPda));
+
+    // STEP 4: Derive Agent A's existing task PDA.
+    const [taskAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskA1Id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 5: Derive Agent B's new task PDA.
+    const [taskBPda, taskBBump] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentBPda.toBuffer(),
+        taskBId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // Both tasks use ID 1, but have different PDAs.
+    assert.ok(!taskAPda.equals(taskBPda));
+
+    // STEP 6: Confirm Agent B is registered and active.
+    const agentB = await program.account.agent.fetch(agentBPda, "processed");
+
+    assert.ok(agentB.vault.equals(vaultPda));
+    assert.ok(agentB.authority.equals(agentBKeypair.publicKey));
+    assert.strictEqual(agentB.active, true);
+
+    // STEP 7: Verify Agent A's task already exists.
+    const taskABefore = await program.account.task.fetch(taskAPda, "processed");
+
+    assert.ok(taskABefore.agent.equals(agentAPda));
+    assert.ok(taskABefore.budget.eq(taskA1Budget));
+
+    // Agent B's task must not exist yet.
+    const taskBBefore = await provider.connection.getAccountInfo(
+      taskBPda,
+      "processed"
+    );
+
+    assert.strictEqual(taskBBefore, null);
+
+    // STEP 8: Derive the shared treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 9: Record treasury and Vault state.
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    // Agent A has already reserved 150,000.
+    assert.ok(vaultBefore.totalReserved.eq(taskA1Budget));
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "400000");
+
+    // STEP 10: Register Agent B's task and reserve its budget.
+    const tx = await program.methods
+      .createTask(taskBId, taskBBudget, taskBRecipient, taskBExpiresAt)
+      .accountsPartial({
+        owner,
+        vault: vaultPda,
+        agent: agentBPda,
+        tokenMint,
+        treasury: treasuryAta,
+        task: taskBPda,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    console.log("Agent B task transaction:", tx);
+
+    // STEP 11: Verify Agent B's task state.
+    const taskB = await program.account.task.fetch(taskBPda, "processed");
+
+    assert.ok(taskB.vault.equals(vaultPda));
+    assert.ok(taskB.agent.equals(agentBPda));
+    assert.ok(taskB.taskId.eq(taskBId));
+    assert.ok(taskB.recipient.equals(taskBRecipient));
+
+    assert.ok(taskB.budget.eq(taskBBudget));
+    assert.ok(taskB.spent.eq(new BN(0)));
+    assert.ok(taskB.expiresAt.eq(taskBExpiresAt));
+    assert.ok(taskB.nextNonce.eq(new BN(0)));
+    assert.strictEqual(taskB.active, true);
+    assert.strictEqual(taskB.bump, taskBBump);
+
+    // STEP 12: Verify cumulative reservation accounting.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    const expectedReserved = vaultBefore.totalReserved.add(taskBBudget);
+
+    assert.ok(vaultAfter.totalReserved.eq(expectedReserved));
+
+    assert.strictEqual(vaultAfter.totalReserved.toString(), "250000");
+
+    // STEP 13: Verify the treasury balance did not change.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    // STEP 14: Verify remaining unreserved balance.
+    const available = new BN(treasuryAfter.amount.toString()).sub(
+      vaultAfter.totalReserved
+    );
+
+    assert.strictEqual(available.toString(), "150000");
+
+    // STEP 15: Verify Agent A's original task is unchanged.
+    const taskAAfter = await program.account.task.fetch(taskAPda, "processed");
+
+    assert.ok(taskAAfter.agent.equals(taskABefore.agent));
+    assert.ok(taskAAfter.budget.eq(taskABefore.budget));
+    assert.ok(taskAAfter.spent.eq(taskABefore.spent));
+    assert.ok(taskAAfter.recipient.equals(taskABefore.recipient));
+    assert.ok(taskAAfter.nextNonce.eq(taskABefore.nextNonce));
+    assert.strictEqual(taskAAfter.active, taskABefore.active);
+
+    console.log("Agent A reserved:", taskAAfter.budget.toString());
+    console.log("Agent B reserved:", taskB.budget.toString());
+    console.log("Total reserved:", vaultAfter.totalReserved.toString());
+    console.log("Available balance:", available.toString());
+    console.log("Independent task reservations verified!");
+  });
 });
