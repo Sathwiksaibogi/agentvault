@@ -2707,4 +2707,192 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Available balance:", available.toString());
     console.log("Independent task reservations verified!");
   });
+
+  it("rejects task budgets exceeding unreserved treasury funds", async () => {
+    // STEP 1: Attempt an additional task for Agent B.
+    const taskId = new BN(2);
+    const excessiveBudget = new BN(150_001);
+    const recipient = Keypair.generate().publicKey;
+
+    const expiresAt = new BN(Math.floor(Date.now() / 1000) + 24 * 60 * 60);
+
+    // STEP 2: Derive Agent A and Agent B PDAs.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    const [agentBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentBKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive the new attempted Task PDA.
+    const [rejectedTaskPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentBPda.toBuffer(),
+        taskId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 4: Derive the existing task PDAs.
+    const [taskAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskA1Id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    const [taskBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentBPda.toBuffer(),
+        new BN(1).toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 5: Derive the shared treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 6: Read financial state before the attack.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const taskABefore = await program.account.task.fetch(taskAPda, "processed");
+
+    const taskBBefore = await program.account.task.fetch(taskBPda, "processed");
+
+    // STEP 7: Verify the starting financial conditions.
+    assert.strictEqual(vaultBefore.totalReserved.toString(), "250000");
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "400000");
+
+    const available = new BN(treasuryBefore.amount.toString()).sub(
+      vaultBefore.totalReserved
+    );
+
+    assert.strictEqual(available.toString(), "150000");
+
+    // We're attempting to reserve ONE more unit than available.
+    assert.ok(excessiveBudget.eq(available.add(new BN(1))));
+
+    // The proposed task must not already exist.
+    const rejectedTaskBefore = await provider.connection.getAccountInfo(
+      rejectedTaskPda,
+      "processed"
+    );
+
+    assert.strictEqual(rejectedTaskBefore, null);
+
+    // STEP 8: Attempt the excessive reservation.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .createTask(taskId, excessiveBudget, recipient, expiresAt)
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            agent: agentBPda,
+            tokenMint,
+            treasury: treasuryAta,
+            task: rejectedTaskPda,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const code = error?.error?.errorCode?.code;
+
+        if (code) {
+          assert.strictEqual(code, "InsufficientUnreservedFunds");
+        } else {
+          const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+            "\n"
+          );
+
+          assert.match(
+            details,
+            /InsufficientUnreservedFunds|Insufficient unreserved treasury balance/i
+          );
+        }
+
+        return true;
+      }
+    );
+
+    // STEP 9: Verify the rejected Task was not created.
+    const rejectedTaskAfter = await provider.connection.getAccountInfo(
+      rejectedTaskPda,
+      "processed"
+    );
+
+    assert.strictEqual(rejectedTaskAfter, null);
+
+    // STEP 10: Verify Vault reservations are unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+
+    // STEP 11: Verify treasury tokens are unchanged.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    // STEP 12: Verify both existing tasks remain intact.
+    const taskAAfter = await program.account.task.fetch(taskAPda, "processed");
+
+    const taskBAfter = await program.account.task.fetch(taskBPda, "processed");
+
+    assert.ok(taskAAfter.budget.eq(taskABefore.budget));
+    assert.ok(taskAAfter.spent.eq(taskABefore.spent));
+    assert.ok(taskAAfter.nextNonce.eq(taskABefore.nextNonce));
+    assert.strictEqual(taskAAfter.active, taskABefore.active);
+
+    assert.ok(taskBAfter.budget.eq(taskBBefore.budget));
+    assert.ok(taskBAfter.spent.eq(taskBBefore.spent));
+    assert.ok(taskBAfter.nextNonce.eq(taskBBefore.nextNonce));
+    assert.strictEqual(taskBAfter.active, taskBBefore.active);
+
+    console.log("Over-reservation correctly rejected!");
+    console.log("Attempted budget:", excessiveBudget.toString());
+    console.log("Total reserved:", vaultAfter.totalReserved.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+  });
 });
