@@ -30,4 +30,14 @@ pub mod agentvault {
     pub fn register_agent(ctx: Context<RegisterAgent>, agent_authority: Pubkey) -> Result<()> {
         instructions::register_agent::handler(ctx, agent_authority)
     }
+
+    pub fn create_task(
+        ctx: Context<CreateTask>,
+        task_id: u64,
+        budget: u64,
+        recipient: Pubkey,
+        expires_at: i64,
+    ) -> Result<()> {
+        instructions::create_task::handler(ctx, task_id, budget, recipient, expires_at)
+    }
 }
