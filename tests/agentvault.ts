@@ -1929,4 +1929,110 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Existing Agent A PDA:", agentAPda.toBase58());
     console.log("Agent authority preserved:", agentAfter.authority.toBase58());
   });
+
+  it("rejects agent registration by a non-owner", async () => {
+    // STEP 1: Create an attacker wallet.
+    const attacker = Keypair.generate();
+
+    // Create an unrelated AI agent identity.
+    const attackerAgentAuthority = Keypair.generate();
+
+    assert.ok(!attacker.publicKey.equals(owner));
+
+    // STEP 2: Derive the attempted Agent PDA.
+    // The attacker is trying to register an agent
+    // under the legitimate owner's Vault.
+    const [attackerAgentPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        attackerAgentAuthority.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Verify the legitimate Vault owner.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    assert.ok(vaultBefore.owner.equals(owner));
+    assert.ok(!vaultBefore.owner.equals(attacker.publicKey));
+
+    // STEP 4: Verify the attempted Agent does not exist.
+    const agentBefore = await provider.connection.getAccountInfo(
+      attackerAgentPda,
+      "processed"
+    );
+
+    assert.strictEqual(agentBefore, null);
+
+    // STEP 5: Attempt unauthorized registration.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .registerAgent(attackerAgentAuthority.publicKey)
+          .accountsPartial({
+            owner: attacker.publicKey,
+            vault: vaultPda,
+            agent: attackerAgentPda,
+            systemProgram: SystemProgram.programId,
+          })
+          // Give the attacker enough SOL to be a payer.
+          // This transfer is atomic with the failing
+          // registration and will be rolled back.
+          .preInstructions([
+            SystemProgram.transfer({
+              fromPubkey: owner,
+              toPubkey: attacker.publicKey,
+              lamports: 20_000_000,
+            }),
+          ])
+          // The attacker really signs the transaction.
+          .signers([attacker])
+          .rpc();
+      },
+
+      (error: any) => {
+        const errorCode = error?.error?.errorCode?.code;
+
+        if (errorCode) {
+          // The attacker's public key produces an incorrect Vault PDA.
+          assert.strictEqual(errorCode, "ConstraintSeeds");
+        } else {
+          const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+            "\n"
+          );
+
+          assert.match(details, /ConstraintSeeds|seeds constraint|0x7d6|2006/i);
+        }
+
+        return true;
+      }
+    );
+
+    // STEP 6: Verify no unauthorized Agent was created.
+    const agentAfter = await provider.connection.getAccountInfo(
+      attackerAgentPda,
+      "processed"
+    );
+
+    assert.strictEqual(agentAfter, null);
+
+    // STEP 7: Verify the Vault remains unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.owner.equals(vaultBefore.owner));
+
+    assert.ok(vaultAfter.tokenMint.equals(vaultBefore.tokenMint));
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+
+    assert.strictEqual(vaultAfter.paused, vaultBefore.paused);
+
+    console.log("Unauthorized agent registration rejected!");
+    console.log("Vault owner:", owner.toBase58());
+    console.log("Attacker:", attacker.publicKey.toBase58());
+  });
 });
