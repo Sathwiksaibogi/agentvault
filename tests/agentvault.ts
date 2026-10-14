@@ -2035,4 +2035,91 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Vault owner:", owner.toBase58());
     console.log("Attacker:", attacker.publicKey.toBase58());
   });
+
+  it("rejects registration with an invalid agent authority", async () => {
+    // STEP 1: Use the default all-zero public key.
+    const invalidAuthority = SystemProgram.programId;
+
+    assert.ok(invalidAuthority.equals(new PublicKey(new Uint8Array(32))));
+
+    // STEP 2: Derive the correct PDA for this invalid authority.
+    const [invalidAgentPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("agent"), vaultPda.toBuffer(), invalidAuthority.toBuffer()],
+      program.programId
+    );
+
+    // STEP 3: Confirm this Agent account does not exist.
+    const before = await provider.connection.getAccountInfo(
+      invalidAgentPda,
+      "processed"
+    );
+
+    assert.strictEqual(before, null);
+
+    // STEP 4: Record the existing Vault state.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    // STEP 5: Attempt registration using the invalid authority.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .registerAgent(invalidAuthority)
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            agent: invalidAgentPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const errorCode = error?.error?.errorCode?.code;
+
+        if (errorCode) {
+          assert.strictEqual(errorCode, "InvalidAgentAuthority");
+        } else {
+          const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+            "\n"
+          );
+
+          assert.match(
+            details,
+            /InvalidAgentAuthority|Invalid agent authority public key/i
+          );
+        }
+
+        return true;
+      }
+    );
+
+    // STEP 6: Verify the rejected account was not created.
+    const after = await provider.connection.getAccountInfo(
+      invalidAgentPda,
+      "processed"
+    );
+
+    assert.strictEqual(
+      after,
+      null,
+      "Invalid Agent account must not be created"
+    );
+
+    // STEP 7: Verify the Vault remains unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.owner.equals(vaultBefore.owner));
+
+    assert.ok(vaultAfter.tokenMint.equals(vaultBefore.tokenMint));
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+
+    assert.strictEqual(vaultAfter.paused, vaultBefore.paused);
+
+    console.log("Invalid agent authority rejected correctly!");
+    console.log("Rejected authority:", invalidAuthority.toBase58());
+    console.log("No invalid Agent account was created.");
+  });
 });
