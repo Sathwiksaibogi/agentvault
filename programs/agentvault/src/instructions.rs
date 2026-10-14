@@ -4,6 +4,7 @@ pub mod execute_task_payment;
 pub mod initialize_treasury;
 pub mod initialize_vault;
 pub mod register_agent;
+pub mod revoke_task;
 
 pub use create_task::*;
 pub use deposit_tokens::*;
@@ -11,3 +12,4 @@ pub use execute_task_payment::*;
 pub use initialize_treasury::*;
 pub use initialize_vault::*;
 pub use register_agent::*;
+pub use revoke_task::*;

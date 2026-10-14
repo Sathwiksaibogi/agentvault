@@ -48,4 +48,8 @@ pub mod agentvault {
     ) -> Result<()> {
         instructions::execute_task_payment::handler(ctx, amount, nonce)
     }
+
+    pub fn revoke_task(ctx: Context<RevokeTask>) -> Result<()> {
+        instructions::revoke_task::handler(ctx)
+    }
 }
