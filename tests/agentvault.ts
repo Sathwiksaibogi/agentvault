@@ -4113,4 +4113,206 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Vault reserved:", vaultAfter.totalReserved.toString());
     console.log("Payment nonce preserved:", taskAfter.nextNonce.toString());
   });
+
+  it("rejects payment exceeding the remaining task budget", async () => {
+    // STEP 1: Define an excessive payment.
+    const excessiveAmount = new BN(110_001);
+    const validNonce = new BN(1);
+
+    // STEP 2: Derive Agent A and Agent B PDAs.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    const [agentBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentBKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive both existing Task PDAs.
+    const [taskAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskA1Id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    const [taskBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentBPda.toBuffer(),
+        new BN(1).toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 4: Derive treasury and approved recipient ATAs.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    const recipientAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      taskA1Recipient,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 5: Read both task states before the attempt.
+    const taskABefore = await program.account.task.fetch(taskAPda, "processed");
+
+    const taskBBefore = await program.account.task.fetch(taskBPda, "processed");
+
+    assert.ok(taskABefore.agent.equals(agentAPda));
+    assert.ok(taskABefore.recipient.equals(taskA1Recipient));
+    assert.ok(taskABefore.spent.eq(new BN(40_000)));
+    assert.ok(taskABefore.budget.eq(new BN(150_000)));
+    assert.ok(taskABefore.nextNonce.eq(validNonce));
+    assert.strictEqual(taskABefore.active, true);
+
+    // STEP 6: Compute the exact remaining task budget.
+    const remainingBudget = taskABefore.budget.sub(taskABefore.spent);
+
+    assert.strictEqual(remainingBudget.toString(), "110000");
+
+    assert.ok(excessiveAmount.eq(remainingBudget.add(new BN(1))));
+
+    // STEP 7: Record Vault and token balances.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const recipientBefore = await getAccount(
+      provider.connection,
+      recipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.ok(vaultBefore.totalReserved.eq(new BN(210_000)));
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "360000");
+
+    assert.strictEqual(recipientBefore.amount.toString(), "40000");
+
+    // STEP 8: Attempt payment exceeding Agent A's budget.
+    // The signer, nonce, recipient, and accounts are valid.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .executeTaskPayment(excessiveAmount, validNonce)
+          .accountsPartial({
+            agentAuthority: agentAKeypair.publicKey,
+            vault: vaultPda,
+            agent: agentAPda,
+            task: taskAPda,
+            tokenMint,
+            treasury: treasuryAta,
+            recipient: taskA1Recipient,
+            recipientToken: recipientAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([agentAKeypair])
+          .rpc();
+      },
+      (error: any) => {
+        const code = error?.error?.errorCode?.code;
+
+        if (code) {
+          assert.strictEqual(code, "TaskBudgetExceeded");
+        } else {
+          const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+            "\n"
+          );
+
+          assert.match(
+            details,
+            /TaskBudgetExceeded|Payment exceeds the remaining task budget/i
+          );
+        }
+
+        return true;
+      }
+    );
+
+    // STEP 9: Verify no tokens were transferred.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const recipientAfter = await getAccount(
+      provider.connection,
+      recipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      recipientAfter.amount.toString(),
+      recipientBefore.amount.toString()
+    );
+
+    // STEP 10: Verify Agent A's task state is unchanged.
+    const taskAAfter = await program.account.task.fetch(taskAPda, "processed");
+
+    assert.ok(taskAAfter.budget.eq(taskABefore.budget));
+    assert.ok(taskAAfter.spent.eq(taskABefore.spent));
+    assert.ok(taskAAfter.nextNonce.eq(taskABefore.nextNonce));
+    assert.ok(taskAAfter.recipient.equals(taskABefore.recipient));
+    assert.strictEqual(taskAAfter.active, taskABefore.active);
+
+    // STEP 11: Verify Agent B's policy is unaffected.
+    const taskBAfter = await program.account.task.fetch(taskBPda, "processed");
+
+    assert.ok(taskBAfter.budget.eq(taskBBefore.budget));
+    assert.ok(taskBAfter.spent.eq(taskBBefore.spent));
+    assert.ok(taskBAfter.nextNonce.eq(taskBBefore.nextNonce));
+    assert.strictEqual(taskBAfter.active, taskBBefore.active);
+
+    // STEP 12: Verify shared Vault accounting is unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+
+    // STEP 13: Print the verified result.
+    console.log("Excessive task payment correctly rejected!");
+    console.log("Attempted amount:", excessiveAmount.toString());
+    console.log("Remaining budget:", remainingBudget.toString());
+    console.log("Agent A spent:", taskAAfter.spent.toString());
+    console.log("Payment nonce preserved:", taskAAfter.nextNonce.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+    console.log("Vault reserved:", vaultAfter.totalReserved.toString());
+  });
 });
