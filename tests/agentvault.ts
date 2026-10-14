@@ -5024,4 +5024,147 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Vault total reserved:", vaultAfter.totalReserved.toString());
     console.log("Unreserved funds:", unreservedAfter.toString());
   });
+
+  it("rejects duplicate revocation without releasing funds twice", async () => {
+    // STEP 1: Derive Agent A's PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 2: Derive Task 4, revoked in Test 41.
+    const revokedTaskId = new BN(4);
+
+    const [revokedTaskPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        revokedTaskId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive the treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 4: Confirm Task 4 was already revoked.
+    const taskBefore = await program.account.task.fetch(
+      revokedTaskPda,
+      "processed"
+    );
+
+    assert.strictEqual(taskBefore.active, false);
+    assert.ok(taskBefore.budget.eq(new BN(10_000)));
+    assert.ok(taskBefore.spent.eq(new BN(0)));
+    assert.ok(taskBefore.nextNonce.eq(new BN(0)));
+
+    // STEP 5: Snapshot Vault and treasury state.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.ok(vaultBefore.totalReserved.eq(new BN(180_000)));
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "330000");
+
+    // STEP 6: Attempt to revoke the same task again.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .revokeTask()
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            agent: agentAPda,
+            task: revokedTaskPda,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const code = error?.error?.errorCode?.code;
+
+        if (code) {
+          assert.strictEqual(code, "TaskInactive");
+        } else {
+          const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+            "\n"
+          );
+
+          assert.match(details, /TaskInactive|Task is inactive/i);
+        }
+
+        return true;
+      }
+    );
+
+    // STEP 7: Verify the task remains unchanged.
+    const taskAfter = await program.account.task.fetch(
+      revokedTaskPda,
+      "processed"
+    );
+
+    assert.strictEqual(taskAfter.active, false);
+    assert.ok(taskAfter.budget.eq(taskBefore.budget));
+    assert.ok(taskAfter.spent.eq(taskBefore.spent));
+    assert.ok(taskAfter.nextNonce.eq(taskBefore.nextNonce));
+    assert.ok(taskAfter.agent.equals(taskBefore.agent));
+    assert.ok(taskAfter.vault.equals(taskBefore.vault));
+
+    // STEP 8: Verify no additional reservation was released.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+
+    assert.strictEqual(vaultAfter.totalReserved.toString(), "180000");
+
+    // STEP 9: Verify no treasury tokens moved.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    // STEP 10: Verify available funds did not change.
+    const availableBefore = new BN(treasuryBefore.amount.toString()).sub(
+      vaultBefore.totalReserved
+    );
+
+    const availableAfter = new BN(treasuryAfter.amount.toString()).sub(
+      vaultAfter.totalReserved
+    );
+
+    assert.ok(availableAfter.eq(availableBefore));
+
+    assert.strictEqual(availableAfter.toString(), "150000");
+
+    console.log("Duplicate revocation correctly rejected!");
+    console.log("Task active:", taskAfter.active);
+    console.log("Vault reserved:", vaultAfter.totalReserved.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+    console.log("Available funds:", availableAfter.toString());
+  });
 });
