@@ -6,6 +6,7 @@ import {
   PublicKey,
   SystemProgram,
   LAMPORTS_PER_SOL,
+  SYSVAR_CLOCK_PUBKEY,
 } from "@solana/web3.js";
 import {
   createMint,
@@ -4314,5 +4315,238 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Payment nonce preserved:", taskAAfter.nextNonce.toString());
     console.log("Treasury balance:", treasuryAfter.amount.toString());
     console.log("Vault reserved:", vaultAfter.totalReserved.toString());
+  });
+
+  it("rejects payments after a task has expired", async function () {
+    // This test waits for the validator's on-chain clock.
+    this.timeout(60_000);
+
+    // STEP 1: Read the actual Solana Clock sysvar.
+    const readChainTime = async (): Promise<number> => {
+      const clock = await provider.connection.getAccountInfo(
+        SYSVAR_CLOCK_PUBKEY,
+        "processed"
+      );
+
+      assert.ok(clock, "Clock sysvar must exist");
+
+      // Clock layout:
+      // slot: 8 bytes
+      // epoch_start_timestamp: 8 bytes
+      // epoch: 8 bytes
+      // leader_schedule_epoch: 8 bytes
+      // unix_timestamp: 8 bytes, starting at offset 32
+      return Number(clock.data.readBigInt64LE(32));
+    };
+
+    // STEP 2: Define a new short-lived task for Agent A.
+    const taskId = new BN(4);
+    const budget = new BN(10_000);
+    const chainNow = await readChainTime();
+
+    // Give the task time to initialize successfully.
+    const expiresAt = new BN(chainNow + 8);
+
+    // Reuse the existing approved recipient and its ATA.
+    const recipient = taskA1Recipient;
+
+    // STEP 3: Derive Agent A's PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 4: Derive the short-lived Task PDA.
+    const [taskPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 5: Derive SPL token accounts.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    const recipientAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      recipient,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 6: Record the Vault before task creation.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    assert.ok(vaultBefore.totalReserved.eq(new BN(210_000)));
+
+    // STEP 7: Create the short-lived task.
+    await program.methods
+      .createTask(taskId, budget, recipient, expiresAt)
+      .accountsPartial({
+        owner,
+        vault: vaultPda,
+        agent: agentAPda,
+        tokenMint,
+        treasury: treasuryAta,
+        task: taskPda,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    // STEP 8: Verify the short-lived task was created.
+    const taskBefore = await program.account.task.fetch(taskPda, "processed");
+
+    assert.ok(taskBefore.vault.equals(vaultPda));
+    assert.ok(taskBefore.agent.equals(agentAPda));
+    assert.ok(taskBefore.recipient.equals(recipient));
+    assert.ok(taskBefore.budget.eq(budget));
+    assert.ok(taskBefore.spent.eq(new BN(0)));
+    assert.ok(taskBefore.nextNonce.eq(new BN(0)));
+    assert.ok(taskBefore.expiresAt.eq(expiresAt));
+    assert.strictEqual(taskBefore.active, true);
+
+    // Reservation has increased from 210,000 to 220,000.
+    const vaultAfterCreation = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    assert.ok(vaultAfterCreation.totalReserved.eq(new BN(220_000)));
+
+    // STEP 9: Wait until the on-chain Clock reaches expiry.
+    const waitStarted = Date.now();
+    let currentChainTime = await readChainTime();
+
+    while (currentChainTime < expiresAt.toNumber()) {
+      if (Date.now() - waitStarted > 45_000) {
+        throw new Error("Validator Clock did not reach task expiry in time");
+      }
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 400));
+
+      currentChainTime = await readChainTime();
+    }
+
+    assert.ok(currentChainTime >= expiresAt.toNumber());
+
+    console.log("Task expiry:", expiresAt.toString());
+    console.log("On-chain time:", currentChainTime);
+
+    // STEP 10: Snapshot balances after the task expires.
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const recipientBefore = await getAccount(
+      provider.connection,
+      recipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 11: Attempt an otherwise valid payment.
+    // Agent A signs correctly.
+    // Nonce 0 is correct for this new task.
+    // Amount is within the task's budget.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .executeTaskPayment(new BN(5_000), new BN(0))
+          .accountsPartial({
+            agentAuthority: agentAKeypair.publicKey,
+            vault: vaultPda,
+            agent: agentAPda,
+            task: taskPda,
+            tokenMint,
+            treasury: treasuryAta,
+            recipient,
+            recipientToken: recipientAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([agentAKeypair])
+          .rpc();
+      },
+      (error: any) => {
+        const code = error?.error?.errorCode?.code;
+
+        if (code) {
+          assert.strictEqual(code, "TaskExpired");
+        } else {
+          const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+            "\n"
+          );
+
+          assert.match(details, /TaskExpired|Task has expired/i);
+        }
+
+        return true;
+      }
+    );
+
+    // STEP 12: Verify the expired task was not modified.
+    const taskAfter = await program.account.task.fetch(taskPda, "processed");
+
+    assert.ok(taskAfter.spent.eq(new BN(0)));
+    assert.ok(taskAfter.nextNonce.eq(new BN(0)));
+    assert.ok(taskAfter.budget.eq(budget));
+    assert.ok(taskAfter.expiresAt.eq(expiresAt));
+    assert.strictEqual(taskAfter.active, true);
+
+    // STEP 13: Verify no SPL tokens moved.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const recipientAfter = await getAccount(
+      provider.connection,
+      recipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      recipientAfter.amount.toString(),
+      recipientBefore.amount.toString()
+    );
+
+    // STEP 14: Verify reservation accounting is unchanged
+    // by the rejected payment.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultAfterCreation.totalReserved));
+
+    console.log("Expired task payment correctly rejected!");
+    console.log("Task spent:", taskAfter.spent.toString());
+    console.log("Task nonce:", taskAfter.nextNonce.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+    console.log("Vault total reserved:", vaultAfter.totalReserved.toString());
   });
 });
