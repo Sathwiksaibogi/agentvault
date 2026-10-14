@@ -34,6 +34,11 @@ describe("AgentVault - Vault Initialization", () => {
   // Test identities for independent AI agents.
   const agentAKeypair = Keypair.generate();
   const agentBKeypair = Keypair.generate();
+  // Shared test configuration for Agent A's first task.
+  const taskA1Id = new BN(1);
+  const taskA1Budget = new BN(150_000);
+  const taskA1Recipient = Keypair.generate().publicKey;
+  const taskA1ExpiresAt = new BN(Math.floor(Date.now() / 1000) + 24 * 60 * 60);
 
   const [vaultPda, vaultBump] = PublicKey.findProgramAddressSync(
     [
@@ -2392,5 +2397,135 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Agent authority:", agentAuthority.toBase58());
     console.log("Vault 1 Agent PDA:", primaryAgentPda.toBase58());
     console.log("Vault 2 Agent PDA:", secondAgentPda.toBase58());
+  });
+
+  it("creates a budget-reserved task for Agent A", async () => {
+    // STEP 1: Derive Agent A's registered PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 2: Derive the task PDA.
+    const [taskPda, taskBump] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskA1Id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive the treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 4: Verify Agent A is registered and active.
+    const agent = await program.account.agent.fetch(agentAPda, "processed");
+
+    assert.ok(agent.vault.equals(vaultPda));
+    assert.ok(agent.authority.equals(agentAKeypair.publicKey));
+    assert.strictEqual(agent.active, true);
+
+    // STEP 5: Verify this task does not already exist.
+    const before = await provider.connection.getAccountInfo(
+      taskPda,
+      "processed"
+    );
+
+    assert.strictEqual(before, null);
+
+    // STEP 6: Record treasury and Vault state before creation.
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    assert.ok(vaultBefore.totalReserved.eq(new BN(0)));
+
+    assert.ok(new BN(treasuryBefore.amount.toString()).gte(taskA1Budget));
+
+    // STEP 7: Create the task and reserve its budget.
+    const tx = await program.methods
+      .createTask(taskA1Id, taskA1Budget, taskA1Recipient, taskA1ExpiresAt)
+      .accountsPartial({
+        owner,
+        vault: vaultPda,
+        agent: agentAPda,
+        tokenMint,
+        treasury: treasuryAta,
+        task: taskPda,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    console.log("Task creation transaction:", tx);
+
+    // STEP 8: Fetch the newly created Task.
+    const task = await program.account.task.fetch(taskPda, "processed");
+
+    // STEP 9: Verify task identity and permissions.
+    assert.ok(task.vault.equals(vaultPda));
+    assert.ok(task.agent.equals(agentAPda));
+    assert.ok(task.taskId.eq(taskA1Id));
+    assert.ok(task.recipient.equals(taskA1Recipient));
+
+    // STEP 10: Verify task budget and initial spending state.
+    assert.ok(task.budget.eq(taskA1Budget));
+    assert.ok(task.spent.eq(new BN(0)));
+    assert.ok(task.expiresAt.eq(taskA1ExpiresAt));
+    assert.ok(task.nextNonce.eq(new BN(0)));
+    assert.strictEqual(task.active, true);
+    assert.strictEqual(task.bump, taskBump);
+
+    // STEP 11: Verify the Vault reserved the budget.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    const expectedReserved = vaultBefore.totalReserved.add(taskA1Budget);
+
+    assert.ok(vaultAfter.totalReserved.eq(expectedReserved));
+
+    // STEP 12: Verify no SPL tokens were transferred.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    // STEP 13: Calculate remaining unreserved funds.
+    const availableBalance = new BN(treasuryAfter.amount.toString()).sub(
+      vaultAfter.totalReserved
+    );
+
+    assert.strictEqual(availableBalance.toString(), "250000");
+
+    console.log("Agent A Task PDA:", taskPda.toBase58());
+    console.log("Task budget:", task.budget.toString());
+    console.log("Total reserved:", vaultAfter.totalReserved.toString());
+    console.log("Available balance:", availableBalance.toString());
+    console.log("Agent A task created successfully!");
   });
 });
