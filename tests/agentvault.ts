@@ -5167,4 +5167,205 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Treasury balance:", treasuryAfter.amount.toString());
     console.log("Available funds:", availableAfter.toString());
   });
+
+  it("rejects task revocation by a non-owner", async () => {
+    // STEP 1: Agent B will attempt to revoke Agent A's task.
+    const attacker = agentBKeypair;
+
+    assert.ok(!attacker.publicKey.equals(owner));
+
+    // STEP 2: Derive Agent A's PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive Agent B's PDA.
+    const [agentBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentBKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 4: Derive Agent A's active Task 1.
+    const [taskAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskA1Id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 5: Derive Agent B's active Task 1.
+    const [taskBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentBPda.toBuffer(),
+        new BN(1).toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 6: Derive the treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 7: Verify the attacker is a real registered agent.
+    const agentB = await program.account.agent.fetch(agentBPda, "processed");
+
+    assert.ok(agentB.authority.equals(attacker.publicKey));
+
+    assert.ok(agentB.vault.equals(vaultPda));
+    assert.strictEqual(agentB.active, true);
+
+    // STEP 8: Read both tasks before the attempted attack.
+    const taskABefore = await program.account.task.fetch(taskAPda, "processed");
+
+    const taskBBefore = await program.account.task.fetch(taskBPda, "processed");
+
+    assert.ok(taskABefore.agent.equals(agentAPda));
+    assert.ok(taskABefore.budget.eq(new BN(150_000)));
+    assert.ok(taskABefore.spent.eq(new BN(40_000)));
+    assert.ok(taskABefore.nextNonce.eq(new BN(1)));
+    assert.strictEqual(taskABefore.active, true);
+
+    assert.ok(taskBBefore.spent.eq(new BN(30_000)));
+    assert.strictEqual(taskBBefore.active, true);
+
+    // STEP 9: Record financial state.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.ok(vaultBefore.owner.equals(owner));
+
+    assert.ok(vaultBefore.totalReserved.eq(new BN(180_000)));
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "330000");
+
+    // STEP 10: Agent B attempts to impersonate the Vault owner.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .revokeTask()
+          .accountsPartial({
+            // ATTACK: Agent B claims to be the owner.
+            owner: attacker.publicKey,
+
+            // But supplies the real Vault and Agent A's task.
+            vault: vaultPda,
+            agent: agentAPda,
+            task: taskAPda,
+          })
+          // Agent B genuinely signs the transaction.
+          .signers([attacker])
+          .rpc();
+      },
+      (error: any) => {
+        const code = error?.error?.errorCode?.code;
+
+        const expectedErrors = ["ConstraintHasOne", "ConstraintSeeds"];
+
+        if (code) {
+          assert.ok(
+            expectedErrors.includes(code),
+            `Unexpected error code: ${code}`
+          );
+        } else {
+          const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+            "\n"
+          );
+
+          assert.match(
+            details,
+            /ConstraintHasOne|ConstraintSeeds|has one constraint|seeds constraint/i
+          );
+        }
+
+        return true;
+      }
+    );
+
+    // STEP 11: Verify Agent A's task remains active.
+    const taskAAfter = await program.account.task.fetch(taskAPda, "processed");
+
+    assert.strictEqual(taskAAfter.active, true);
+    assert.ok(taskAAfter.budget.eq(taskABefore.budget));
+    assert.ok(taskAAfter.spent.eq(taskABefore.spent));
+
+    assert.ok(taskAAfter.nextNonce.eq(taskABefore.nextNonce));
+
+    assert.ok(taskAAfter.recipient.equals(taskABefore.recipient));
+
+    // STEP 12: Verify Agent B's task is unchanged too.
+    const taskBAfter = await program.account.task.fetch(taskBPda, "processed");
+
+    assert.ok(taskBAfter.budget.eq(taskBBefore.budget));
+    assert.ok(taskBAfter.spent.eq(taskBBefore.spent));
+
+    assert.ok(taskBAfter.nextNonce.eq(taskBBefore.nextNonce));
+
+    assert.strictEqual(taskBAfter.active, taskBBefore.active);
+
+    // STEP 13: Verify no reservation was released.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+
+    assert.ok(vaultAfter.owner.equals(vaultBefore.owner));
+
+    // STEP 14: Verify the treasury was untouched.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    // STEP 15: Verify available balance remains unchanged.
+    const availableBefore = new BN(treasuryBefore.amount.toString()).sub(
+      vaultBefore.totalReserved
+    );
+
+    const availableAfter = new BN(treasuryAfter.amount.toString()).sub(
+      vaultAfter.totalReserved
+    );
+
+    assert.ok(availableAfter.eq(availableBefore));
+
+    assert.strictEqual(availableAfter.toString(), "150000");
+
+    console.log("Unauthorized task revocation rejected!");
+    console.log("Vault owner:", owner.toBase58());
+    console.log("Attacking Agent B:", attacker.publicKey.toBase58());
+    console.log("Agent A task still active:", taskAAfter.active);
+    console.log("Vault reserved:", vaultAfter.totalReserved.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+  });
 });
