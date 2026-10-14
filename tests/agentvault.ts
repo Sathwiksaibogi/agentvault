@@ -1849,4 +1849,84 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Agent B PDA:", agentBPda.toBase58());
     console.log("Both agents registered under the same Vault!");
   });
+
+  it("rejects duplicate agent registration", async () => {
+    // STEP 1: Derive the existing Agent A PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 2: Verify Agent A is already registered.
+    const agentBefore = await program.account.agent.fetch(
+      agentAPda,
+      "processed"
+    );
+
+    assert.ok(agentBefore.vault.equals(vaultPda));
+
+    assert.ok(agentBefore.authority.equals(agentAKeypair.publicKey));
+
+    assert.strictEqual(agentBefore.active, true);
+
+    // STEP 3: Attempt to register Agent A again.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .registerAgent(agentAKeypair.publicKey)
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            agent: agentAPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const details = [
+          error?.error?.errorCode?.code ?? "",
+          error?.message ?? "",
+          ...(error?.logs ?? []),
+        ].join("\n");
+
+        // The account initialization should fail
+        // because the Agent PDA already exists.
+        assert.match(
+          details,
+          /already in use|already initialized|already exists|AccountAlreadyInitialized|AccountDiscriminatorAlreadySet/i
+        );
+
+        return true;
+      }
+    );
+
+    // STEP 4: Fetch Agent A after the rejected operation.
+    const agentAfter = await program.account.agent.fetch(
+      agentAPda,
+      "processed"
+    );
+
+    // STEP 5: Verify Agent A was not modified.
+    assert.ok(agentAfter.vault.equals(agentBefore.vault));
+
+    assert.ok(agentAfter.authority.equals(agentBefore.authority));
+
+    assert.strictEqual(agentAfter.active, agentBefore.active);
+
+    assert.strictEqual(agentAfter.bump, agentBefore.bump);
+
+    // STEP 6: Verify Vault accounting remains unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.totalReserved.eq(new BN(0)));
+    assert.strictEqual(vaultAfter.paused, false);
+
+    console.log("Duplicate agent registration rejected!");
+    console.log("Existing Agent A PDA:", agentAPda.toBase58());
+    console.log("Agent authority preserved:", agentAfter.authority.toBase58());
+  });
 });
