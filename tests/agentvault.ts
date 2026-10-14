@@ -3173,4 +3173,141 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Total reserved:", vaultAfter.totalReserved.toString());
     console.log("Treasury balance:", treasuryAfter.amount.toString());
   });
+
+  it("rejects task creation with an expired deadline", async () => {
+    // STEP 1: Define task parameters.
+    const taskId = new BN(3);
+    const budget = new BN(25_000);
+    const recipient = Keypair.generate().publicKey;
+
+    // This task expired one hour ago.
+    const expiredAt = new BN(Math.floor(Date.now() / 1000) - 60 * 60);
+
+    assert.ok(expiredAt.lt(new BN(Math.floor(Date.now() / 1000))));
+
+    // STEP 2: Derive Agent A's PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive the proposed Task PDA.
+    const [taskPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 4: Derive the canonical treasury ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 5: Confirm this task does not exist.
+    const taskBefore = await provider.connection.getAccountInfo(
+      taskPda,
+      "processed"
+    );
+
+    assert.strictEqual(taskBefore, null);
+
+    // STEP 6: Record existing financial state.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(vaultBefore.totalReserved.toString(), "250000");
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "400000");
+
+    // STEP 7: Attempt to create an already-expired task.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .createTask(taskId, budget, recipient, expiredAt)
+          .accountsPartial({
+            owner,
+            vault: vaultPda,
+            agent: agentAPda,
+            tokenMint,
+            treasury: treasuryAta,
+            task: taskPda,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      },
+      (error: any) => {
+        const code = error?.error?.errorCode?.code;
+
+        if (code) {
+          assert.strictEqual(code, "InvalidTaskExpiry");
+        } else {
+          const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+            "\n"
+          );
+
+          assert.match(
+            details,
+            /InvalidTaskExpiry|Task expiration must be in the future/i
+          );
+        }
+
+        return true;
+      }
+    );
+
+    // STEP 8: Confirm no Task account was created.
+    const taskAfter = await provider.connection.getAccountInfo(
+      taskPda,
+      "processed"
+    );
+
+    assert.strictEqual(taskAfter, null, "Expired task must not be initialized");
+
+    // STEP 9: Verify reserved funds remain unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+
+    assert.ok(vaultAfter.owner.equals(vaultBefore.owner));
+    assert.strictEqual(vaultAfter.paused, vaultBefore.paused);
+
+    // STEP 10: Verify treasury balance remains unchanged.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    console.log("Expired task correctly rejected!");
+    console.log("Expired timestamp:", expiredAt.toString());
+    console.log("Total reserved:", vaultAfter.totalReserved.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+  });
 });
