@@ -3310,4 +3310,236 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Total reserved:", vaultAfter.totalReserved.toString());
     console.log("Treasury balance:", treasuryAfter.amount.toString());
   });
+
+  it("executes an authorized SPL token payment by Agent A", async () => {
+    // STEP 1: Define the first payment.
+    const paymentAmount = new BN(40_000);
+    const paymentNonce = new BN(0);
+
+    // STEP 2: Derive Agent A's PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive Agent B's PDA for isolation checks.
+    const [agentBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentBKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 4: Derive both existing task PDAs.
+    const [taskAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskA1Id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    const [taskBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentBPda.toBuffer(),
+        new BN(1).toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 5: Derive the treasury's canonical ATA.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 6: Derive Agent A's approved recipient ATA.
+    const recipientAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      taskA1Recipient,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 7: Verify Agent A's on-chain identity.
+    const agentA = await program.account.agent.fetch(agentAPda, "processed");
+
+    assert.ok(agentA.authority.equals(agentAKeypair.publicKey));
+
+    assert.ok(agentA.vault.equals(vaultPda));
+    assert.strictEqual(agentA.active, true);
+
+    // STEP 8: Read the task policies before payment.
+    const taskABefore = await program.account.task.fetch(taskAPda, "processed");
+
+    const taskBBefore = await program.account.task.fetch(taskBPda, "processed");
+
+    assert.ok(taskABefore.agent.equals(agentAPda));
+    assert.ok(taskABefore.recipient.equals(taskA1Recipient));
+    assert.ok(taskABefore.budget.eq(new BN(150_000)));
+    assert.ok(taskABefore.spent.eq(new BN(0)));
+    assert.ok(taskABefore.nextNonce.eq(paymentNonce));
+    assert.strictEqual(taskABefore.active, true);
+
+    // STEP 9: Record the treasury and Vault state.
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "400000");
+
+    assert.ok(vaultBefore.totalReserved.eq(new BN(250_000)));
+
+    // STEP 10: Verify the recipient ATA does not yet exist.
+    const recipientBefore = await provider.connection.getAccountInfo(
+      recipientAta,
+      "processed"
+    );
+
+    assert.strictEqual(recipientBefore, null);
+
+    // STEP 11: Create the recipient ATA and execute
+    // the payment in one atomic transaction.
+    const tx = await program.methods
+      .executeTaskPayment(paymentAmount, paymentNonce)
+      .accountsPartial({
+        agentAuthority: agentAKeypair.publicKey,
+        vault: vaultPda,
+        agent: agentAPda,
+        task: taskAPda,
+        tokenMint,
+        treasury: treasuryAta,
+        recipient: taskA1Recipient,
+        recipientToken: recipientAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .preInstructions([
+        createAssociatedTokenAccountInstruction(
+          owner,
+          recipientAta,
+          taskA1Recipient,
+          tokenMint,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        ),
+      ])
+      .signers([agentAKeypair])
+      .rpc();
+
+    console.log("Agent A payment transaction:", tx);
+
+    // STEP 12: Read the updated token accounts.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const recipientAfter = await getAccount(
+      provider.connection,
+      recipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 13: Verify actual SPL token movement.
+    const expectedTreasuryBalance = new BN(
+      treasuryBefore.amount.toString()
+    ).sub(paymentAmount);
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      expectedTreasuryBalance.toString()
+    );
+
+    assert.strictEqual(
+      recipientAfter.amount.toString(),
+      paymentAmount.toString()
+    );
+
+    assert.ok(recipientAfter.owner.equals(taskA1Recipient));
+    assert.ok(recipientAfter.mint.equals(tokenMint));
+
+    // STEP 14: Verify Agent A's updated spending state.
+    const taskAAfter = await program.account.task.fetch(taskAPda, "processed");
+
+    const expectedSpent = taskABefore.spent.add(paymentAmount);
+
+    assert.ok(taskAAfter.spent.eq(expectedSpent));
+
+    assert.ok(taskAAfter.nextNonce.eq(taskABefore.nextNonce.add(new BN(1))));
+
+    assert.ok(taskAAfter.budget.eq(taskABefore.budget));
+    assert.ok(taskAAfter.agent.equals(taskABefore.agent));
+    assert.ok(taskAAfter.recipient.equals(taskABefore.recipient));
+
+    assert.strictEqual(taskAAfter.active, true);
+
+    // STEP 15: Verify the remaining task budget.
+    const remainingTaskBudget = taskAAfter.budget.sub(taskAAfter.spent);
+
+    assert.strictEqual(remainingTaskBudget.toString(), "110000");
+
+    // STEP 16: Verify the Vault's reservation decreased.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    const expectedReserved = vaultBefore.totalReserved.sub(paymentAmount);
+
+    assert.ok(vaultAfter.totalReserved.eq(expectedReserved));
+
+    assert.strictEqual(vaultAfter.totalReserved.toString(), "210000");
+
+    // STEP 17: Verify unreserved funds are unchanged.
+    const unreservedBefore = new BN(treasuryBefore.amount.toString()).sub(
+      vaultBefore.totalReserved
+    );
+
+    const unreservedAfter = new BN(treasuryAfter.amount.toString()).sub(
+      vaultAfter.totalReserved
+    );
+
+    assert.ok(unreservedAfter.eq(unreservedBefore));
+
+    assert.strictEqual(unreservedAfter.toString(), "150000");
+
+    // STEP 18: Verify Agent B's task was not modified.
+    const taskBAfter = await program.account.task.fetch(taskBPda, "processed");
+
+    assert.ok(taskBAfter.budget.eq(taskBBefore.budget));
+    assert.ok(taskBAfter.spent.eq(taskBBefore.spent));
+
+    assert.ok(taskBAfter.nextNonce.eq(taskBBefore.nextNonce));
+
+    assert.ok(taskBAfter.agent.equals(taskBBefore.agent));
+
+    console.log("Agent A payment executed successfully!");
+    console.log("Payment amount:", paymentAmount.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+    console.log("Recipient balance:", recipientAfter.amount.toString());
+    console.log("Agent A spent:", taskAAfter.spent.toString());
+    console.log("Agent A remaining:", remainingTaskBudget.toString());
+    console.log("Vault total reserved:", vaultAfter.totalReserved.toString());
+    console.log("Next payment nonce:", taskAAfter.nextNonce.toString());
+  });
 });
