@@ -31,4 +31,19 @@ pub enum ErrorCode {
 
     #[msg("Arithmetic overflow")]
     MathOverflow,
+
+    #[msg("Payment amount must be greater than zero")]
+    InvalidPaymentAmount,
+
+    #[msg("Task is inactive")]
+    TaskInactive,
+
+    #[msg("Task has expired")]
+    TaskExpired,
+
+    #[msg("Invalid payment nonce")]
+    InvalidPaymentNonce,
+
+    #[msg("Payment exceeds the remaining task budget")]
+    TaskBudgetExceeded,
 }

@@ -40,4 +40,12 @@ pub mod agentvault {
     ) -> Result<()> {
         instructions::create_task::handler(ctx, task_id, budget, recipient, expires_at)
     }
+
+    pub fn execute_task_payment(
+        ctx: Context<ExecuteTaskPayment>,
+        amount: u64,
+        nonce: u64,
+    ) -> Result<()> {
+        instructions::execute_task_payment::handler(ctx, amount, nonce)
+    }
 }
