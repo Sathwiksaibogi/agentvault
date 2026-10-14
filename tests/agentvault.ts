@@ -5553,4 +5553,218 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Available funds:", availableAfter.toString());
     console.log("Agent B remaining budget:", agentBRemaining.toString());
   });
+
+  it("rejects payments from a revoked task", async () => {
+    // STEP 1: Define an otherwise valid payment.
+    const paymentAmount = new BN(10_000);
+    const paymentNonce = new BN(1);
+
+    // STEP 2: Derive Agent A's PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive Agent A's revoked Task 1.
+    const [taskAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskA1Id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 4: Derive Agent B's independent task.
+    const [agentBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentBKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    const [taskBPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentBPda.toBuffer(),
+        new BN(1).toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 5: Derive the treasury and recipient ATAs.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    const recipientAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      taskA1Recipient,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 6: Confirm the task was revoked in Test 44.
+    const taskBefore = await program.account.task.fetch(taskAPda, "processed");
+
+    assert.strictEqual(taskBefore.active, false);
+    assert.ok(taskBefore.budget.eq(new BN(150_000)));
+    assert.ok(taskBefore.spent.eq(new BN(40_000)));
+    assert.ok(taskBefore.nextNonce.eq(paymentNonce));
+    assert.ok(taskBefore.agent.equals(agentAPda));
+    assert.ok(taskBefore.recipient.equals(taskA1Recipient));
+
+    // The hypothetical payment would fit the original
+    // budget. Revocation must be the reason it fails.
+    assert.ok(taskBefore.spent.add(paymentAmount).lte(taskBefore.budget));
+
+    // STEP 7: Verify Agent A remains a valid registered agent.
+    const agentA = await program.account.agent.fetch(agentAPda, "processed");
+
+    assert.ok(agentA.authority.equals(agentAKeypair.publicKey));
+    assert.strictEqual(agentA.active, true);
+
+    // STEP 8: Snapshot shared and independent state.
+    const taskBBefore = await program.account.task.fetch(taskBPda, "processed");
+
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const recipientBefore = await getAccount(
+      provider.connection,
+      recipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.ok(vaultBefore.totalReserved.eq(new BN(70_000)));
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "330000");
+
+    assert.strictEqual(recipientBefore.amount.toString(), "40000");
+
+    // STEP 9: Agent A tries to spend from its revoked task.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .executeTaskPayment(paymentAmount, paymentNonce)
+          .accountsPartial({
+            agentAuthority: agentAKeypair.publicKey,
+            vault: vaultPda,
+            agent: agentAPda,
+            task: taskAPda,
+            tokenMint,
+            treasury: treasuryAta,
+            recipient: taskA1Recipient,
+            recipientToken: recipientAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([agentAKeypair])
+          .rpc();
+      },
+      (error: any) => {
+        const code = error?.error?.errorCode?.code;
+
+        if (code) {
+          assert.strictEqual(code, "TaskInactive");
+        } else {
+          const details = [error?.message ?? "", ...(error?.logs ?? [])].join(
+            "\n"
+          );
+
+          assert.match(details, /TaskInactive|Task is inactive/i);
+        }
+
+        return true;
+      }
+    );
+
+    // STEP 10: Verify no SPL tokens moved.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const recipientAfter = await getAccount(
+      provider.connection,
+      recipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      recipientAfter.amount.toString(),
+      recipientBefore.amount.toString()
+    );
+
+    // STEP 11: Verify Agent A's task remains unchanged.
+    const taskAfter = await program.account.task.fetch(taskAPda, "processed");
+
+    assert.strictEqual(taskAfter.active, false);
+    assert.ok(taskAfter.budget.eq(taskBefore.budget));
+    assert.ok(taskAfter.spent.eq(taskBefore.spent));
+    assert.ok(taskAfter.nextNonce.eq(taskBefore.nextNonce));
+    assert.ok(taskAfter.recipient.equals(taskBefore.recipient));
+
+    // STEP 12: Verify Agent B's task is unaffected.
+    const taskBAfter = await program.account.task.fetch(taskBPda, "processed");
+
+    assert.ok(taskBAfter.budget.eq(taskBBefore.budget));
+    assert.ok(taskBAfter.spent.eq(taskBBefore.spent));
+    assert.ok(taskBAfter.nextNonce.eq(taskBBefore.nextNonce));
+    assert.strictEqual(taskBAfter.active, taskBBefore.active);
+
+    // STEP 13: Verify Vault reservations remain unchanged.
+    const vaultAfter = await program.account.vault.fetch(vaultPda, "processed");
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+
+    // STEP 14: Verify no additional funds became available.
+    const availableBefore = new BN(treasuryBefore.amount.toString()).sub(
+      vaultBefore.totalReserved
+    );
+
+    const availableAfter = new BN(treasuryAfter.amount.toString()).sub(
+      vaultAfter.totalReserved
+    );
+
+    assert.ok(availableAfter.eq(availableBefore));
+
+    assert.strictEqual(availableAfter.toString(), "260000");
+
+    console.log("Revoked task payment correctly rejected!");
+    console.log("Task active:", taskAfter.active);
+    console.log("Agent A spent:", taskAfter.spent.toString());
+    console.log("Payment nonce preserved:", taskAfter.nextNonce.toString());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+    console.log("Vault total reserved:", vaultAfter.totalReserved.toString());
+    console.log("Available funds:", availableAfter.toString());
+  });
 });
