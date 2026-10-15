@@ -30,6 +30,7 @@ import { evaluateApprovedWorkflow } from "./ai-workflow";
 import {
   assertPaymentInstructions,
   assertExactAgentVaultPayment,
+  assertSerializedAgentVaultPayment,
 } from "./payment-transaction-guard";
 
 import { verifyWorkflowApproval, type ApprovalScope } from "./signed-workflow";
@@ -420,8 +421,7 @@ async function main() {
   // 13. Restore the saved bytes and verify again.
   const prepared = loadPreparedPayment(RUNTIME_DIR, requestId);
 
-  assertExactAgentVaultPayment(prepared.transaction, expected);
-
+  assertSerializedAgentVaultPayment(prepared.transaction, expected);
   assert.strictEqual(
     prepared.record.lastValidBlockHeight,
     lastValidBlockHeight
