@@ -8,6 +8,7 @@
     "@anchor-lang/core": "^1.2.0",
     "@google/genai": "^2.29.1",
     "dotenv": "^18.0.7",
+    "tweetnacl": "^1.0.3",
     "zod": "^4.6.7"
   },
   "devDependencies": {
