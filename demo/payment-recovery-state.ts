@@ -26,17 +26,16 @@ export function classifyPayment(
   );
 
   if (status !== null) {
-    if (status.err != null) {
-      return "FAILED_ON_CHAIN";
-    }
-
-    if (
+    const sufficientlyConfirmed =
       status.confirmationStatus === "confirmed" ||
-      status.confirmationStatus === "finalized"
-    ) {
-      return "CONFIRMED";
+      status.confirmationStatus === "finalized";
+
+    if (sufficientlyConfirmed) {
+      return status.err == null ? "CONFIRMED" : "FAILED_ON_CHAIN";
     }
 
+    // Includes processed-only transactions, even when
+    // an RPC node temporarily reports an execution error.
     return "OBSERVED_UNCONFIRMED";
   }
 

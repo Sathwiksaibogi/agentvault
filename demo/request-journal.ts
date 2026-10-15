@@ -100,5 +100,15 @@ export function claimApprovedWorkflow(
     closeSync(fd);
   }
 
+  // Flush the directory entry as well as file contents.
+  // This improves crash durability on Linux filesystems.
+  const directoryFd = openSync(journalDir, "r");
+
+  try {
+    fsyncSync(directoryFd);
+  } finally {
+    closeSync(directoryFd);
+  }
+
   return { path, record };
 }

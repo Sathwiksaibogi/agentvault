@@ -67,3 +67,17 @@ test("does not discard an observed failure after expiry", () => {
     "FAILED_ON_CHAIN"
   );
 });
+
+test("does not treat processed-only errors as definitive", () => {
+  assert.equal(
+    classifyPayment(
+      {
+        err: { InstructionError: [0, "Custom"] },
+        confirmationStatus: "processed",
+      },
+      110,
+      120
+    ),
+    "OBSERVED_UNCONFIRMED"
+  );
+});
