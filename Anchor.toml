@@ -8,6 +8,9 @@ skip-lint = false
 [programs.localnet]
 agentvault = "BVhTPuAK9birmLeYBeAuBMusEdYW9oFjQeJeMU9hNX9d"
 
+[programs.devnet]
+agentvault = "BVhTPuAK9birmLeYBeAuBMusEdYW9oFjQeJeMU9hNX9d"
+
 [provider]
 cluster = "localnet"
 wallet = "~/.config/solana/id.json"
