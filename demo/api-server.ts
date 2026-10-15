@@ -365,6 +365,50 @@ async function getWorkflowData(requestId: string) {
   };
 }
 
+async function getActivityData() {
+  assert.equal(NETWORK, "devnet", "Activity API currently supports Devnet");
+
+  // Reuse our verified on-chain agent reader.
+  const { agents } = await getAgentsData();
+
+  const pages = await Promise.all(
+    agents.map(async (agent) => {
+      const taskPda = new PublicKey(agent.task.taskPda);
+
+      // Read confirmed transactions referencing this task.
+      const signatures = await connection.getSignaturesForAddress(
+        taskPda,
+        { limit: 12 },
+        "confirmed"
+      );
+
+      return signatures.map((entry) => ({
+        signature: entry.signature,
+        slot: entry.slot,
+        blockTimeUnix: entry.blockTime,
+        agentId: agent.id,
+        workflow: agent.workflow,
+        taskId: agent.task.taskId,
+        taskPda: agent.task.taskPda,
+        succeeded: entry.err === null,
+        explorerUrl:
+          `https://explorer.solana.com/tx/` +
+          `${entry.signature}?cluster=devnet`,
+      }));
+    })
+  );
+
+  const activity = pages
+    .flat()
+    .sort((a, b) => b.slot - a.slot)
+    .slice(0, 20);
+
+  return {
+    network: NETWORK,
+    activity,
+  };
+}
+
 const server = createServer(async (request, response) => {
   if (request.method !== "GET") {
     sendJson(response, 405, {
@@ -457,6 +501,25 @@ const server = createServer(async (request, response) => {
 
       sendJson(response, 503, {
         error: "Workflow status temporarily unavailable",
+      });
+    }
+
+    return;
+  }
+
+  if (pathname === "/api/activity") {
+    try {
+      const result = await getActivityData();
+
+      sendJson(response, 200, result);
+    } catch (error) {
+      console.error(
+        "Activity read failed:",
+        error instanceof Error ? error.message : error
+      );
+
+      sendJson(response, 503, {
+        error: "Activity data temporarily unavailable",
       });
     }
 
