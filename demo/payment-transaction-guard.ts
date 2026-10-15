@@ -177,3 +177,71 @@ export function assertExactAgentVaultPayment(
 
   assert.ok(transaction.verifySignatures(), "Invalid transaction signature");
 }
+
+export function assertSerializedAgentVaultPayment(
+  transaction: Transaction,
+  expected: ExpectedPayment
+): void {
+  const { agentAuthority, recipient, mint, paymentInstruction } = expected;
+
+  assert.ok(transaction.recentBlockhash, "Missing transaction blockhash");
+
+  assert.ok(
+    transaction.feePayer?.equals(agentAuthority),
+    "Incorrect agent fee payer"
+  );
+
+  // Reconstruct the exact approved instruction sequence.
+  const recipientAta = getAssociatedTokenAddressSync(
+    mint,
+    recipient,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+
+  const ataInstruction = createAssociatedTokenAccountIdempotentInstruction(
+    agentAuthority,
+    recipientAta,
+    recipient,
+    mint,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+
+  const canonical = new Transaction({
+    feePayer: agentAuthority,
+    recentBlockhash: transaction.recentBlockhash,
+  }).add(ataInstruction, paymentInstruction);
+
+  // Validate the original canonical instruction structure.
+  assertPaymentInstructions(canonical, expected);
+
+  // Compare the actual messages that Solana signs and executes.
+  // This tolerates legitimate account-meta normalization,
+  // but NOT modified accounts, data or extra instructions.
+  assert.ok(
+    Buffer.from(transaction.serializeMessage()).equals(
+      Buffer.from(canonical.serializeMessage())
+    ),
+    "Signed transaction compiled message mismatch"
+  );
+
+  assert.equal(
+    transaction.signatures.length,
+    1,
+    "Expected exactly one agent signature"
+  );
+
+  assert.ok(
+    transaction.signatures[0].publicKey.equals(agentAuthority),
+    "Unexpected transaction signer"
+  );
+
+  assert.ok(transaction.signature, "Missing agent transaction signature");
+
+  assert.ok(
+    transaction.verifySignatures(),
+    "Invalid agent transaction signature"
+  );
+}

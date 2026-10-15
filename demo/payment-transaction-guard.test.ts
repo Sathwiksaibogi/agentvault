@@ -18,6 +18,7 @@ import {
 import {
   AGENTVAULT_PROGRAM_ID,
   assertExactAgentVaultPayment,
+  assertSerializedAgentVaultPayment,
 } from "./payment-transaction-guard";
 
 const agent = Keypair.generate();
@@ -40,7 +41,7 @@ const payment = new TransactionInstruction({
     {
       pubkey: agent.publicKey,
       isSigner: true,
-      isWritable: true,
+      isWritable: false,
     },
     {
       pubkey: mint,
@@ -179,4 +180,42 @@ test("rejects unsigned transactions", () => {
   transaction.add(ataInstruction, payment);
 
   assert.throws(() => validate(transaction), /exactly one transaction signer/);
+});
+
+test("accepts a serialized payment with merged account permissions", () => {
+  const original = buildTransaction();
+
+  const restored = Transaction.from(original.serialize());
+
+  assert.doesNotThrow(() =>
+    assertSerializedAgentVaultPayment(restored, {
+      agentAuthority: agent.publicKey,
+      recipient,
+      mint,
+      paymentInstruction: payment,
+    })
+  );
+});
+
+test("rejects a serialized transaction with altered payment data", () => {
+  const alteredPayment = new TransactionInstruction({
+    programId: payment.programId,
+    keys: payment.keys,
+    data: Buffer.from([9, 2, 3, 4]),
+  });
+
+  const altered = buildTransaction([ataInstruction, alteredPayment]);
+
+  const restored = Transaction.from(altered.serialize());
+
+  assert.throws(
+    () =>
+      assertSerializedAgentVaultPayment(restored, {
+        agentAuthority: agent.publicKey,
+        recipient,
+        mint,
+        paymentInstruction: payment,
+      }),
+    /compiled message mismatch/
+  );
 });
