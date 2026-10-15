@@ -1,5 +1,5 @@
 import * as anchor from "@anchor-lang/core";
-
+import BN from "bn.js";
 import { strict as assert } from "node:assert";
 import { createServer, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
@@ -24,6 +24,23 @@ type DemoState = {
 
 const PORT = 8787;
 const HOST = "127.0.0.1";
+
+const DEMO_AGENTS = [
+  {
+    id: "agent-a",
+    name: "Procurement Agent",
+    workflow: "procurement",
+    authority: "24y99x9EPoJ2ToqygjM37eU9AXz3aFwiDcHFv87LXQfQ",
+    taskId: 1,
+  },
+  {
+    id: "agent-b",
+    name: "Operations Agent",
+    workflow: "operations",
+    authority: "5qHQ9f5E6vQ91JhrDRbbBLpSFudzRBGNdvpXkT1iDLxT",
+    taskId: 1,
+  },
+] as const;
 
 const state = JSON.parse(
   readFileSync(join(RUNTIME_DIR, "state.json"), "utf8")
@@ -90,6 +107,89 @@ async function getTreasuryData() {
   };
 }
 
+async function getAgentsData() {
+  assert.equal(NETWORK, "devnet", "Demo agent API currently supports Devnet");
+
+  const genesisHash = await connection.getGenesisHash();
+
+  assert.equal(
+    genesisHash,
+    state.genesisHash,
+    "RPC is connected to an unexpected ledger"
+  );
+
+  const vaultPda = new PublicKey(state.vault);
+
+  const agents = await Promise.all(
+    DEMO_AGENTS.map(async (config) => {
+      const authority = new PublicKey(config.authority);
+      const taskId = new BN(config.taskId);
+
+      // Derive the registered agent PDA.
+      const [agentPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("agent"), vaultPda.toBuffer(), authority.toBuffer()],
+        program.programId
+      );
+
+      // Derive the agent's task PDA.
+      const [taskPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("task"),
+          agentPda.toBuffer(),
+          taskId.toArrayLike(Buffer, "le", 8),
+        ],
+        program.programId
+      );
+
+      // Read actual on-chain accounts.
+      const [agent, task] = await Promise.all([
+        program.account.agent.fetch(agentPda, "confirmed"),
+        program.account.task.fetch(taskPda, "confirmed"),
+      ]);
+
+      // Verify account relationships.
+      assert.ok(agent.vault.equals(vaultPda));
+      assert.ok(agent.authority.equals(authority));
+
+      assert.ok(task.vault.equals(vaultPda));
+      assert.ok(task.agent.equals(agentPda));
+      assert.ok(task.taskId.eq(taskId));
+
+      const budget = BigInt(task.budget.toString());
+      const spent = BigInt(task.spent.toString());
+
+      assert.ok(spent <= budget, "Task spending exceeds its budget");
+
+      return {
+        id: config.id,
+        name: config.name,
+        workflow: config.workflow,
+        authority: authority.toBase58(),
+        agentPda: agentPda.toBase58(),
+        active: agent.active,
+
+        task: {
+          taskId: config.taskId,
+          taskPda: taskPda.toBase58(),
+          active: task.active,
+          recipient: task.recipient.toBase58(),
+          budgetBaseUnits: budget.toString(),
+          spentBaseUnits: spent.toString(),
+          remainingBaseUnits: (budget - spent).toString(),
+          nextNonce: task.nextNonce.toString(),
+          expiresAtUnix: task.expiresAt.toString(),
+        },
+      };
+    })
+  );
+
+  return {
+    network: NETWORK,
+    vault: state.vault,
+    agents,
+  };
+}
+
 const server = createServer(async (request, response) => {
   if (request.method !== "GET") {
     sendJson(response, 405, {
@@ -129,9 +229,29 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (pathname === "/api/agents") {
+    try {
+      const result = await getAgentsData();
+
+      sendJson(response, 200, result);
+    } catch (error) {
+      console.error(
+        "Agent read failed:",
+        error instanceof Error ? error.message : error
+      );
+
+      sendJson(response, 503, {
+        error: "Agent data temporarily unavailable",
+      });
+    }
+
+    return;
+  }
+
   sendJson(response, 404, {
     error: "Endpoint not found",
   });
+  
 });
 
 server.listen(PORT, HOST, () => {
