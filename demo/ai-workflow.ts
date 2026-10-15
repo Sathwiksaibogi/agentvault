@@ -115,9 +115,7 @@ async function withRetry<T>(operation: () => Promise<T>): Promise<T> {
   throw new Error("Gemini unavailable");
 }
 
-async function main() {
-  const requestId = process.argv[2];
-
+export async function evaluateApprovedWorkflow(requestId: string) {
   assert.ok(
     requestId && /^[a-zA-Z0-9_-]{8,64}$/.test(requestId),
     "Usage: ai-workflow.ts <approved-request-id>"
@@ -410,13 +408,7 @@ Rules:
   );
 
   if (result.approved === false) {
-    console.log("\nAI WORKFLOW: BLOCKED");
-    console.log("Code:", result.code);
-    console.log("Reason:", result.reason);
-    console.log("NO PAYMENT SUBMITTED");
-
-    process.exitCode = 2;
-    return;
+    throw new Error(`AI workflow rejected: ${result.code} — ${result.reason}`);
   }
 
   console.log("\n=== AI WORKFLOW VALIDATION PASSED ===");
@@ -431,13 +423,29 @@ Rules:
   console.log("\nMODE: DRY RUN");
   console.log("NO TRANSACTION SUBMITTED");
   console.log("Duplicate-request protection and signing are not enabled.");
+
+  return {
+    connection,
+    program,
+    state,
+    workflow,
+    vaultPda,
+    mint,
+    treasury,
+    agentPda,
+    taskPda,
+    recipient: task.recipient,
+    nonce: task.nextNonce.toString(),
+  };
 }
 
-main().catch((error) => {
-  console.error(
-    "\nAI WORKFLOW: BLOCKED",
-    error instanceof Error ? error.message : error
-  );
+if (require.main === module) {
+  evaluateApprovedWorkflow(process.argv[2]).catch((error) => {
+    console.error(
+      "\nAI WORKFLOW: BLOCKED",
+      error instanceof Error ? error.message : error
+    );
 
-  process.exitCode = 1;
-});
+    process.exitCode = 1;
+  });
+}

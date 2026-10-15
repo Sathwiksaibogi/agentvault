@@ -71,7 +71,7 @@ function assertInstructionEqual(
   }
 }
 
-export function assertExactAgentVaultPayment(
+export function assertPaymentInstructions(
   transaction: Transaction,
   expected: ExpectedPayment
 ): void {
@@ -149,6 +149,17 @@ export function assertExactAgentVaultPayment(
     paymentInstruction,
     "AgentVault payment"
   );
+}
+
+export function assertExactAgentVaultPayment(
+  transaction: Transaction,
+  expected: ExpectedPayment
+): void {
+  assertPaymentInstructions(transaction, expected);
+
+  const { agentAuthority } = expected;
+
+  // 6. Ensure the agent has signed the final message.
 
   // 6. Ensure the agent has signed the final message.
   assert.equal(
