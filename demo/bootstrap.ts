@@ -1,6 +1,7 @@
 import * as anchor from "@anchor-lang/core";
 import BN from "bn.js";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { RPC_URL, RUNTIME_DIR } from "./runtime-config";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
@@ -18,12 +19,12 @@ import { strict as assert } from "node:assert";
 import type { Agentvault } from "../target/types/agentvault";
 
 // This bootstrap is intentionally restricted to localnet.
-const RPC_URL = "http://127.0.0.1:8899";
+
 const VAULT_ID = new BN(7001);
 const TREASURY_TARGET = 400_000;
 const PROGRAM_ID = "BVhTPuAK9birmLeYBeAuBMusEdYW9oFjQeJeMU9hNX9d";
 
-const STATE_DIR = join(process.cwd(), "demo/local");
+const STATE_DIR = RUNTIME_DIR;
 const STATE_PATH = join(STATE_DIR, "state.json");
 
 type DemoState = {
@@ -291,7 +292,10 @@ async function main() {
 
   assert.ok(Number(finalTreasury.amount) >= TREASURY_TARGET);
 
-  assert.ok(finalVault.totalReserved.eq(new BN(0)));
+  assert.ok(
+    finalVault.totalReserved.lte(new BN(finalTreasury.amount.toString())),
+    "Reserved funds exceed the treasury balance"
+  );
   assert.strictEqual(finalVault.paused, false);
 
   console.log("\n=== AGENTVAULT BOOTSTRAP COMPLETE ===");

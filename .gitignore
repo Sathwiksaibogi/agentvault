@@ -10,3 +10,6 @@ test-ledger
 # AgentVault local demo state and private keys
 demo/local/
 demo/.env
+
+# Separate Devnet runtime state and private agent keys
+demo/devnet/

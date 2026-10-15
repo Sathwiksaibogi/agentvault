@@ -1,6 +1,7 @@
 import * as anchor from "@anchor-lang/core";
 import BN from "bn.js";
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import { RPC_URL, RUNTIME_DIR } from "./runtime-config";
 import { getAccount, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { strict as assert } from "node:assert";
 import {
@@ -15,8 +16,7 @@ import { join } from "node:path";
 
 import type { Agentvault } from "../target/types/agentvault";
 
-const RPC_URL = "http://127.0.0.1:8899";
-const LOCAL_DIR = join(process.cwd(), "demo/local");
+const LOCAL_DIR = RUNTIME_DIR;
 const STATE_PATH = join(LOCAL_DIR, "state.json");
 
 type DemoState = {
