@@ -1,4 +1,5 @@
 import * as anchor from "@anchor-lang/core";
+import { resolveAiDecision } from "./ai-decision-cache";
 import BN from "bn.js";
 import { GoogleGenAI } from "@google/genai";
 import { config } from "dotenv";
@@ -328,33 +329,44 @@ export async function evaluateApprovedWorkflow(requestId: string) {
   // 6. Ask Gemini to evaluate the signed workflow.
   // ------------------------------------------------
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const receiptSecret = process.env.AGENTVAULT_DECISION_HMAC_KEY;
 
-  assert.ok(apiKey, "Missing Gemini API key");
+  assert.ok(receiptSecret, "AGENTVAULT_DECISION_HMAC_KEY is required");
 
-  const ai = new GoogleGenAI({ apiKey });
+  const { proposal, source } = await resolveAiDecision(
+    RUNTIME_DIR,
+    signedApproval,
+    scope,
+    receiptSecret,
+    nowUnix,
+    async () => {
+      const apiKey = process.env.GEMINI_API_KEY;
 
-  const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+      assert.ok(apiKey, "Missing Gemini API key");
 
-  const role =
-    selectedAgent === "agent-a" ? "Procurement Agent" : "Operations Agent";
+      const ai = new GoogleGenAI({ apiKey });
 
-  console.log("\n=== GEMINI WORKFLOW EVALUATION ===");
-  console.log("Role:", role);
-  console.log("Model:", model);
-  console.log("Mode: DRY RUN");
+      const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
-  const response = await withRetry(() =>
-    ai.models.generateContent({
-      model,
-      contents: [
-        "Evaluate this owner-approved workflow:",
-        `Workflow category: ${workflow.kind}`,
-        `Purpose: ${workflow.description}`,
-        `Requested amount: ${workflow.amountBaseUnits} token base units`,
-      ].join("\n"),
-      config: {
-        systemInstruction: `
+      const role =
+        selectedAgent === "agent-a" ? "Procurement Agent" : "Operations Agent";
+
+      console.log("\n=== GEMINI WORKFLOW EVALUATION ===");
+      console.log("Role:", role);
+      console.log("Model:", model);
+      console.log("Mode: DRY RUN");
+
+      const response = await withRetry(() =>
+        ai.models.generateContent({
+          model,
+          contents: [
+            "Evaluate this owner-approved workflow:",
+            `Workflow category: ${workflow.kind}`,
+            `Purpose: ${workflow.description}`,
+            `Requested amount: ${workflow.amountBaseUnits} token base units`,
+          ].join("\n"),
+          config: {
+            systemInstruction: `
 You are the ${role} for AgentVault.
 
 Review the workflow request and decide PAY or REJECT.
@@ -371,16 +383,18 @@ Rules:
 - Explain your decision briefly.
 - You cannot authorize or submit a blockchain payment.
 `,
-        temperature: 0,
-        responseMimeType: "application/json",
-        responseJsonSchema: responseSchema,
-      },
-    })
+            temperature: 0,
+            responseMimeType: "application/json",
+            responseJsonSchema: responseSchema,
+          },
+        })
+      );
+
+      assert.ok(response.text, "Gemini returned no response");
+
+      return proposalSchema.parse(JSON.parse(response.text));
+    }
   );
-
-  assert.ok(response.text, "Gemini returned no response");
-
-  const proposal = proposalSchema.parse(JSON.parse(response.text));
 
   console.log("\n=== AI PROPOSAL ===");
   console.log(JSON.stringify(proposal, null, 2));
