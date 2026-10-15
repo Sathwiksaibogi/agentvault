@@ -12,6 +12,21 @@ import { getAccount, getMint, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import type { Agentvault } from "../target/types/agentvault";
 import { NETWORK, RPC_URL, RUNTIME_DIR } from "./runtime-config";
 
+import bs58 from "bs58";
+
+import { existsSync, readdirSync } from "node:fs";
+
+import { SYSVAR_CLOCK_PUBKEY } from "@solana/web3.js";
+
+import {
+  signedWorkflowSchema,
+  verifyWorkflowApproval,
+  type ApprovalScope,
+} from "./signed-workflow";
+
+import { loadPreparedPayment } from "./prepared-payment";
+
+import { classifyPayment } from "./payment-recovery-state";
 type DemoState = {
   genesisHash: string;
   programId: string;
@@ -190,6 +205,166 @@ async function getAgentsData() {
   };
 }
 
+const REQUEST_PATTERN = /^[a-zA-Z0-9_-]{8,64}$/;
+
+function getWorkflowIds(): string[] {
+  const approvalsDir = join(RUNTIME_DIR, "approvals");
+
+  if (!existsSync(approvalsDir)) {
+    return [];
+  }
+
+  return readdirSync(approvalsDir, {
+    withFileTypes: true,
+  })
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name.endsWith(".json") &&
+        REQUEST_PATTERN.test(entry.name.slice(0, -5))
+    )
+    .map((entry) => entry.name.slice(0, -5))
+    .sort();
+}
+
+async function getWorkflowData(requestId: string) {
+  assert.match(requestId, REQUEST_PATTERN);
+
+  const approvalPath = join(RUNTIME_DIR, "approvals", `${requestId}.json`);
+
+  if (!existsSync(approvalPath)) {
+    return null;
+  }
+
+  const signedApproval = signedWorkflowSchema.parse(
+    JSON.parse(readFileSync(approvalPath, "utf8"))
+  );
+
+  // Verify the API is reading the intended Solana ledger.
+  const [genesisHash, clockAccount] = await Promise.all([
+    connection.getGenesisHash(),
+    connection.getAccountInfo(SYSVAR_CLOCK_PUBKEY, "confirmed"),
+  ]);
+
+  assert.equal(genesisHash, state.genesisHash, "Unexpected Solana ledger");
+
+  assert.ok(clockAccount, "Solana clock unavailable");
+
+  const nowUnix = Number(clockAccount.data.readBigInt64LE(32));
+
+  assert.ok(Number.isSafeInteger(nowUnix));
+
+  const scope: ApprovalScope = {
+    network: NETWORK,
+    genesisHash,
+    programId: state.programId,
+    vault: state.vault,
+    owner: state.owner,
+    mint: state.mint,
+  };
+
+  // Historical approvals may now be expired.
+  // Verify their signature and scope separately
+  // from their current authorization status.
+  const expiresAtUnix = signedApproval.workflow.expiresAtUnix;
+
+  const verificationTime = Math.min(nowUnix, expiresAtUnix - 1);
+
+  const workflow = verifyWorkflowApproval(
+    signedApproval,
+    scope,
+    verificationTime
+  );
+
+  assert.equal(workflow.requestId, requestId);
+
+  const claimPath = join(RUNTIME_DIR, "journal", `${requestId}.json`);
+
+  const signedPath = join(RUNTIME_DIR, "journal", `${requestId}.signed.json`);
+
+  const decisionPath = join(RUNTIME_DIR, "ai-decisions", `${requestId}.json`);
+
+  const claimed = existsSync(claimPath);
+  const signedTransactionExists = existsSync(signedPath);
+
+  assert.ok(
+    !signedTransactionExists || claimed,
+    "Signed transaction exists without a request claim"
+  );
+
+  let payment: {
+    signature: string;
+    recoveryState: string;
+    amountBaseUnits: number;
+    nonce: string;
+  } | null = null;
+
+  if (signedTransactionExists) {
+    // This verifies the journal binding, serialized
+    // transaction digest, and Solana signature.
+    const prepared = loadPreparedPayment(RUNTIME_DIR, requestId);
+
+    const { record, transaction } = prepared;
+
+    assert.equal(record.network, NETWORK);
+    assert.equal(record.agentAuthority, workflow.agentAuthority);
+    assert.equal(record.agent, workflow.assignedAgent);
+    assert.equal(record.amountBaseUnits, workflow.amountBaseUnits);
+
+    assert.ok(transaction.signature);
+
+    const signature = bs58.encode(transaction.signature);
+
+    const [response, blockHeight] = await Promise.all([
+      connection.getSignatureStatuses([signature], {
+        searchTransactionHistory: true,
+      }),
+      connection.getBlockHeight("confirmed"),
+    ]);
+
+    payment = {
+      signature,
+      recoveryState: classifyPayment(
+        response.value[0],
+        blockHeight,
+        record.lastValidBlockHeight
+      ),
+      amountBaseUnits: record.amountBaseUnits,
+      nonce: record.nonce,
+    };
+  }
+
+  return {
+    requestId,
+    network: NETWORK,
+    assignedAgent: workflow.assignedAgent,
+    workflowKind: workflow.kind,
+    taskId: workflow.taskId,
+    recipient: workflow.recipient,
+    amountBaseUnits: workflow.amountBaseUnits,
+
+    approval: {
+      signatureVerified: true,
+      currentlyValid: nowUnix < expiresAtUnix,
+      expiresAtUnix,
+    },
+
+    aiDecision: {
+      receiptFilePresent: existsSync(decisionPath),
+      verification: "not_performed",
+    },
+
+    execution: {
+      journalStatus: !claimed
+        ? "unclaimed"
+        : signedTransactionExists
+        ? "signed_transaction_saved"
+        : "claimed_without_signed_transaction",
+      payment,
+    },
+  };
+}
+
 const server = createServer(async (request, response) => {
   if (request.method !== "GET") {
     sendJson(response, 405, {
@@ -248,10 +423,49 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (pathname === "/api/workflows") {
+    sendJson(response, 200, {
+      network: NETWORK,
+      requestIds: getWorkflowIds(),
+    });
+
+    return;
+  }
+
+  const workflowMatch = pathname.match(
+    /^\/api\/workflows\/([a-zA-Z0-9_-]{8,64})$/
+  );
+
+  if (workflowMatch) {
+    try {
+      const result = await getWorkflowData(workflowMatch[1]);
+
+      if (result === null) {
+        sendJson(response, 404, {
+          error: "Workflow not found",
+        });
+
+        return;
+      }
+
+      sendJson(response, 200, result);
+    } catch (error) {
+      console.error(
+        "Workflow status failed:",
+        error instanceof Error ? error.message : error
+      );
+
+      sendJson(response, 503, {
+        error: "Workflow status temporarily unavailable",
+      });
+    }
+
+    return;
+  }
+
   sendJson(response, 404, {
     error: "Endpoint not found",
   });
-  
 });
 
 server.listen(PORT, HOST, () => {
