@@ -97,10 +97,7 @@ async function withRetry<T>(operation: () => Promise<T>): Promise<T> {
     } catch (error) {
       const status = (error as { status?: number }).status;
 
-      if (
-        ![408, 429, 500, 502, 503, 504].includes(status ?? -1) ||
-        attempt === 3
-      ) {
+      if (![408, 500, 502, 503, 504].includes(status ?? -1) || attempt === 3) {
         throw error;
       }
 
