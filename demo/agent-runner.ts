@@ -1,4 +1,5 @@
 import * as anchor from "@anchor-lang/core";
+import { RPC_URL, RUNTIME_DIR } from "./runtime-config";
 import BN from "bn.js";
 import {
   Connection,
@@ -20,8 +21,7 @@ import { join } from "node:path";
 
 import type { Agentvault } from "../target/types/agentvault";
 
-const RPC_URL = "http://127.0.0.1:8899";
-const LOCAL_DIR = join(process.cwd(), "demo/local");
+const LOCAL_DIR = RUNTIME_DIR;
 
 // Usage:
 // pnpm exec tsx demo/agent-runner.ts agent-a 40000
