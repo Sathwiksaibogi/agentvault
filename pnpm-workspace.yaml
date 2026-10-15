@@ -1,5 +1,7 @@
 allowBuilds:
+  '@google/genai': true
   bigint-buffer: false
   bufferutil: false
   esbuild: true
+  protobufjs: true
   utf-8-validate: false
