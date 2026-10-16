@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { getPhantomProvider } from "./phantom";
 import {
   Activity,
   ArrowUpRight,
@@ -77,6 +78,11 @@ export default function App() {
   const [expandedWorkflowId, setExpandedWorkflowId] = useState<string | null>(
     null
   );
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+
+  const [walletBusy, setWalletBusy] = useState(false);
+
+  const [walletError, setWalletError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -129,6 +135,52 @@ export default function App() {
 
   const decimals = data?.treasury.decimals ?? 6;
 
+  async function connectWallet() {
+    const provider = getPhantomProvider();
+
+    if (!provider) {
+      setWalletError(
+        "Phantom wallet was not detected. Install or enable the Phantom browser extension."
+      );
+      return;
+    }
+
+    setWalletBusy(true);
+    setWalletError(null);
+
+    try {
+      const response = await provider.connect();
+
+      setWalletAddress(response.publicKey.toBase58());
+    } catch (error) {
+      setWalletError(
+        error instanceof Error
+          ? error.message
+          : "Wallet connection was not completed"
+      );
+    } finally {
+      setWalletBusy(false);
+    }
+  }
+
+  async function disconnectWallet() {
+    const provider = getPhantomProvider();
+
+    setWalletBusy(true);
+    setWalletError(null);
+
+    try {
+      await provider?.disconnect();
+      setWalletAddress(null);
+    } catch (error) {
+      setWalletError(
+        error instanceof Error ? error.message : "Unable to disconnect wallet"
+      );
+    } finally {
+      setWalletBusy(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -147,6 +199,26 @@ export default function App() {
             <span className="network-dot" />
             Solana Devnet
           </span>
+
+          <button
+            type="button"
+            className="refresh-button"
+            disabled={walletBusy}
+            onClick={() => {
+              if (walletAddress) {
+                void disconnectWallet();
+              } else {
+                void connectWallet();
+              }
+            }}
+          >
+            <Wallet size={16} />
+            {walletBusy
+              ? "Connecting..."
+              : walletAddress
+              ? `Disconnect ${shortAddress(walletAddress)}`
+              : "Connect Phantom"}
+          </button>
 
           <button
             className="refresh-button"
@@ -181,6 +253,17 @@ export default function App() {
               <ShieldCheck size={15} />
               Read-only dashboard
             </span>
+            {walletAddress && (
+              <span
+                className={`status ${
+                  walletAddress === data?.treasury.owner ? "success" : "warning"
+                }`}
+              >
+                {walletAddress === data?.treasury.owner
+                  ? "Connected address matches vault owner"
+                  : "Connected wallet is not vault owner"}
+              </span>
+            )}
 
             {updatedAt && (
               <span className="muted-text">
@@ -188,6 +271,11 @@ export default function App() {
               </span>
             )}
           </div>
+          {walletError && (
+            <div className="wallet-error" role="alert">
+              {walletError}
+            </div>
+          )}
         </section>
 
         {error && (
@@ -553,7 +641,7 @@ export default function App() {
             </section>
 
             <footer className="footer">
-              <span>AgentVault · Solana Fall School Demo</span>
+              <span>AgentVault</span>
               <span>
                 On-chain policies enforce spending limits. AI decisions alone
                 cannot move funds.

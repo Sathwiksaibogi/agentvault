@@ -528,3 +528,13 @@ button {
     grid-template-columns: 1fr;
   }
 }
+
+.wallet-error {
+  margin-top: 16px;
+  padding: 12px 16px;
+  color: #ffc0c8;
+  background: #3a2027;
+  border: 1px solid #854052;
+  border-radius: 10px;
+  font-size: 13px;
+}
