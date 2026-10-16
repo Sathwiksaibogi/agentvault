@@ -538,3 +538,35 @@ button {
   border-radius: 10px;
   font-size: 13px;
 }
+
+.snapshot-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 15px;
+  padding: 19px 22px;
+  margin-bottom: 26px;
+  border: 1px solid #8b6735;
+  background: #302719;
+  border-radius: 14px;
+  color: #ffd48e;
+}
+
+.snapshot-banner svg {
+  flex-shrink: 0;
+}
+
+.snapshot-banner strong {
+  font-size: 14px;
+}
+
+.snapshot-banner p {
+  color: #d8b889;
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 7px 0 0;
+}
+
+.network-dot-offline {
+  background: #e7ab56;
+  box-shadow: 0 0 12px #e7ab5655;
+}

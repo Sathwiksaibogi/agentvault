@@ -11,9 +11,10 @@ import {
   ShieldCheck,
   Wallet,
   Workflow,
+  AlertTriangle,
 } from "lucide-react";
 
-import { loadDashboard, type DashboardData, type WorkflowStatus } from "./api";
+import { loadDashboard, type DashboardView, type WorkflowStatus } from "./api";
 
 function formatAmount(amount: string, decimals: number): string {
   const value = BigInt(amount);
@@ -71,7 +72,7 @@ function workflowStatus(workflow: WorkflowStatus): {
 }
 
 export default function App() {
-  const [data, setData] = useState<DashboardData | null>(null);
+  const [data, setData] = useState<DashboardView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
@@ -196,8 +197,14 @@ export default function App() {
 
         <div className="header-actions">
           <span className="network-pill">
-            <span className="network-dot" />
-            Solana Devnet
+            <span
+              className={`network-dot ${
+                data?.dataSource === "snapshot" ? "network-dot-offline" : ""
+              }`}
+            />
+            {data?.dataSource === "snapshot"
+              ? "Devnet · Snapshot"
+              : "Solana Devnet"}
           </span>
 
           <button
@@ -265,7 +272,7 @@ export default function App() {
               </span>
             )}
 
-            {updatedAt && (
+            {updatedAt && data?.dataSource === "live" && (
               <span className="muted-text">
                 Updated {updatedAt.toLocaleTimeString()}
               </span>
@@ -277,6 +284,21 @@ export default function App() {
             </div>
           )}
         </section>
+
+        {data?.dataSource === "snapshot" && (
+          <div className="snapshot-banner" role="status">
+            <AlertTriangle size={22} aria-hidden="true" />
+            <div>
+              <strong>Snapshot mode — NOT LIVE</strong>
+              <p>
+                The Solana backend or RPC is currently unavailable. Showing
+                previously captured Devnet data from{" "}
+                {new Date(data.snapshotCapturedAt).toLocaleString()}. Balances,
+                approval validity, and payment statuses may have changed.
+              </p>
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="error-panel">

@@ -1,0 +1,238 @@
+{
+  "snapshotVersion": 1,
+  "capturedAt": "2026-10-16T15:12:33.915Z",
+  "source": "Solana Devnet via AgentVault read-only API",
+  "dashboard": {
+    "treasury": {
+      "network": "devnet",
+      "vault": "9uwN9YvPXKTdnRjKth6uAxK9AcWWLA5ckXMGdb5KbuXB",
+      "owner": "J2GL63eJnVsmJipKkFiaLvwrdSiGnfj5ESpa1HcJXS2G",
+      "tokenMint": "Dm75S15mto6y3vNeXZ8FENayPCiSev7PqJBmSfZkQW38",
+      "treasury": "J4CvuEQ8UJw3chnnnYv3qUZdSMXhpDnt8nD38XawyU3",
+      "vaultId": "7001",
+      "decimals": 6,
+      "paused": false,
+      "balanceBaseUnits": "310000",
+      "reservedBaseUnits": "160000",
+      "availableBaseUnits": "150000"
+    },
+    "agents": [
+      {
+        "id": "agent-a",
+        "name": "Procurement Agent",
+        "workflow": "procurement",
+        "authority": "24y99x9EPoJ2ToqygjM37eU9AXz3aFwiDcHFv87LXQfQ",
+        "agentPda": "EF2aieXgcU3MRXbzozzznUu1aq29YE8e94nKgZGtbday",
+        "active": true,
+        "task": {
+          "taskId": 1,
+          "taskPda": "FcGqzWwXsP9oNfFA5XoiyQE6MDy8s5RaaGWzrunaw5RZ",
+          "active": true,
+          "recipient": "AW6BLbU8ubipVTxNDJ5DZm43x5no8zBEFTbxRDTDDnfA",
+          "budgetBaseUnits": "150000",
+          "spentBaseUnits": "50000",
+          "remainingBaseUnits": "100000",
+          "nextNonce": "2",
+          "expiresAtUnix": "1793258880"
+        }
+      },
+      {
+        "id": "agent-b",
+        "name": "Operations Agent",
+        "workflow": "operations",
+        "authority": "5qHQ9f5E6vQ91JhrDRbbBLpSFudzRBGNdvpXkT1iDLxT",
+        "agentPda": "ETt3W9nwyVCApjVKRh5r9UjvxSTTKpyvU2zh1K527f9V",
+        "active": true,
+        "task": {
+          "taskId": 1,
+          "taskPda": "2neJqReMs9S2XCp99CenoEAAGHuaSeqTb5MSFP7vFoUx",
+          "active": true,
+          "recipient": "831vjP1MHucVPYJbAPcaX93T2BbUweRd84gbmiUkFtXL",
+          "budgetBaseUnits": "100000",
+          "spentBaseUnits": "40000",
+          "remainingBaseUnits": "60000",
+          "nextNonce": "2",
+          "expiresAtUnix": "1793258882"
+        }
+      }
+    ],
+    "workflows": [
+      {
+        "requestId": "operations-001",
+        "network": "devnet",
+        "assignedAgent": "agent-b",
+        "workflowKind": "operations",
+        "taskId": 1,
+        "recipient": "831vjP1MHucVPYJbAPcaX93T2BbUweRd84gbmiUkFtXL",
+        "amountBaseUnits": 10000,
+        "approval": {
+          "signatureVerified": true,
+          "currentlyValid": true,
+          "expiresAtUnix": 1792322023
+        },
+        "aiDecision": {
+          "receiptFilePresent": true,
+          "verification": "not_performed"
+        },
+        "execution": {
+          "journalStatus": "signed_transaction_saved",
+          "payment": {
+            "signature": "2jpT3iZrJ6jrtMEEGsvAEi13ueZKCSsHsHofvbfgbAqYSiFVMXnHisJMYAUchJAvCn5Pdu4jnZRjHZeUrXkzWsv4",
+            "recoveryState": "CONFIRMED",
+            "amountBaseUnits": 10000,
+            "nonce": "1"
+          }
+        }
+      },
+      {
+        "requestId": "procurement-003",
+        "network": "devnet",
+        "assignedAgent": "agent-a",
+        "workflowKind": "procurement",
+        "taskId": 1,
+        "recipient": "AW6BLbU8ubipVTxNDJ5DZm43x5no8zBEFTbxRDTDDnfA",
+        "amountBaseUnits": 10000,
+        "approval": {
+          "signatureVerified": true,
+          "currentlyValid": true,
+          "expiresAtUnix": 1792253630
+        },
+        "aiDecision": {
+          "receiptFilePresent": false,
+          "verification": "not_performed"
+        },
+        "execution": {
+          "journalStatus": "signed_transaction_saved",
+          "payment": {
+            "signature": "5qXGgsyCCEVJsaxMGBhzUftJjTyBpkumjYXdsABvKzasatyPoD71iHLydATtvKKLW4gNSzweGkbM82LuSKUvQNdX",
+            "recoveryState": "EXPIRED_UNRESOLVED",
+            "amountBaseUnits": 10000,
+            "nonce": "1"
+          }
+        }
+      },
+      {
+        "requestId": "procurement-004",
+        "network": "devnet",
+        "assignedAgent": "agent-a",
+        "workflowKind": "procurement",
+        "taskId": 1,
+        "recipient": "AW6BLbU8ubipVTxNDJ5DZm43x5no8zBEFTbxRDTDDnfA",
+        "amountBaseUnits": 10000,
+        "approval": {
+          "signatureVerified": true,
+          "currentlyValid": true,
+          "expiresAtUnix": 1792260794
+        },
+        "aiDecision": {
+          "receiptFilePresent": false,
+          "verification": "not_performed"
+        },
+        "execution": {
+          "journalStatus": "signed_transaction_saved",
+          "payment": {
+            "signature": "hv82AtcwGVcLGGJqkHnaWdR8yJMVoFmrhNzpAYQB44bUq2rNx6KZVJe3JZ2jE9jbbLJG8vEd3xvT9WTmDa9Eq5q",
+            "recoveryState": "EXPIRED_UNRESOLVED",
+            "amountBaseUnits": 10000,
+            "nonce": "1"
+          }
+        }
+      },
+      {
+        "requestId": "procurement-005",
+        "network": "devnet",
+        "assignedAgent": "agent-a",
+        "workflowKind": "procurement",
+        "taskId": 1,
+        "recipient": "AW6BLbU8ubipVTxNDJ5DZm43x5no8zBEFTbxRDTDDnfA",
+        "amountBaseUnits": 10000,
+        "approval": {
+          "signatureVerified": true,
+          "currentlyValid": true,
+          "expiresAtUnix": 1792263510
+        },
+        "aiDecision": {
+          "receiptFilePresent": true,
+          "verification": "not_performed"
+        },
+        "execution": {
+          "journalStatus": "signed_transaction_saved",
+          "payment": {
+            "signature": "ze591ZJ9t3teigshk29U1QDWQL1ig66r7WVR8mDLdj2oP2XbofSyYtmbgn812gf4cJdNECMhJsAUujvTrcydjDb",
+            "recoveryState": "CONFIRMED",
+            "amountBaseUnits": 10000,
+            "nonce": "1"
+          }
+        }
+      }
+    ],
+    "activity": [
+      {
+        "signature": "2jpT3iZrJ6jrtMEEGsvAEi13ueZKCSsHsHofvbfgbAqYSiFVMXnHisJMYAUchJAvCn5Pdu4jnZRjHZeUrXkzWsv4",
+        "slot": 511694748,
+        "blockTimeUnix": 1792149830,
+        "agentId": "agent-b",
+        "workflow": "operations",
+        "taskId": 1,
+        "taskPda": "2neJqReMs9S2XCp99CenoEAAGHuaSeqTb5MSFP7vFoUx",
+        "succeeded": true,
+        "explorerUrl": "https://explorer.solana.com/tx/2jpT3iZrJ6jrtMEEGsvAEi13ueZKCSsHsHofvbfgbAqYSiFVMXnHisJMYAUchJAvCn5Pdu4jnZRjHZeUrXkzWsv4?cluster=devnet"
+      },
+      {
+        "signature": "ze591ZJ9t3teigshk29U1QDWQL1ig66r7WVR8mDLdj2oP2XbofSyYtmbgn812gf4cJdNECMhJsAUujvTrcydjDb",
+        "slot": 511685784,
+        "blockTimeUnix": 1792147688,
+        "agentId": "agent-a",
+        "workflow": "procurement",
+        "taskId": 1,
+        "taskPda": "FcGqzWwXsP9oNfFA5XoiyQE6MDy8s5RaaGWzrunaw5RZ",
+        "succeeded": true,
+        "explorerUrl": "https://explorer.solana.com/tx/ze591ZJ9t3teigshk29U1QDWQL1ig66r7WVR8mDLdj2oP2XbofSyYtmbgn812gf4cJdNECMhJsAUujvTrcydjDb?cluster=devnet"
+      },
+      {
+        "signature": "5NS63JoMUzLYrx8eXEkyKDKb8LCCUUVhYHijCrN5JffREbmLFBAqcfpZgBuX92676rhXSSMoQReRiFia5Cn3sxVj",
+        "slot": 511274817,
+        "blockTimeUnix": 1792049593,
+        "agentId": "agent-b",
+        "workflow": "operations",
+        "taskId": 1,
+        "taskPda": "2neJqReMs9S2XCp99CenoEAAGHuaSeqTb5MSFP7vFoUx",
+        "succeeded": true,
+        "explorerUrl": "https://explorer.solana.com/tx/5NS63JoMUzLYrx8eXEkyKDKb8LCCUUVhYHijCrN5JffREbmLFBAqcfpZgBuX92676rhXSSMoQReRiFia5Cn3sxVj?cluster=devnet"
+      },
+      {
+        "signature": "51sDC1HkEKkjvaF1tedTzv6LnY5yC1ke1Ka7MbvacxzeGocJkrRYa4rG3o7Vhps5HRWiskDKyXHSBvvoVqqfboNZ",
+        "slot": 511274733,
+        "blockTimeUnix": 1792049572,
+        "agentId": "agent-a",
+        "workflow": "procurement",
+        "taskId": 1,
+        "taskPda": "FcGqzWwXsP9oNfFA5XoiyQE6MDy8s5RaaGWzrunaw5RZ",
+        "succeeded": true,
+        "explorerUrl": "https://explorer.solana.com/tx/51sDC1HkEKkjvaF1tedTzv6LnY5yC1ke1Ka7MbvacxzeGocJkrRYa4rG3o7Vhps5HRWiskDKyXHSBvvoVqqfboNZ?cluster=devnet"
+      },
+      {
+        "signature": "2rEjKQunbrMe5LuXJxroUtM6RxaM2f3Lhg7xz2JS7Yn2S9EXXhqfqf2hC3UuxZWsezDzKMrYDSjEVoByKGAF9yWT",
+        "slot": 511273522,
+        "blockTimeUnix": 1792049284,
+        "agentId": "agent-b",
+        "workflow": "operations",
+        "taskId": 1,
+        "taskPda": "2neJqReMs9S2XCp99CenoEAAGHuaSeqTb5MSFP7vFoUx",
+        "succeeded": true,
+        "explorerUrl": "https://explorer.solana.com/tx/2rEjKQunbrMe5LuXJxroUtM6RxaM2f3Lhg7xz2JS7Yn2S9EXXhqfqf2hC3UuxZWsezDzKMrYDSjEVoByKGAF9yWT?cluster=devnet"
+      },
+      {
+        "signature": "52Yqc95B6zcUKG6ngjbUnYzntFDfZwnJZnkQhSLw2WkhThQdQdNG7cvfsEXntFvxntC41X1imiEMmqfQ77DQEqN9",
+        "slot": 511273511,
+        "blockTimeUnix": 1792049282,
+        "agentId": "agent-a",
+        "workflow": "procurement",
+        "taskId": 1,
+        "taskPda": "FcGqzWwXsP9oNfFA5XoiyQE6MDy8s5RaaGWzrunaw5RZ",
+        "succeeded": true,
+        "explorerUrl": "https://explorer.solana.com/tx/52Yqc95B6zcUKG6ngjbUnYzntFDfZwnJZnkQhSLw2WkhThQdQdNG7cvfsEXntFvxntC41X1imiEMmqfQ77DQEqN9?cluster=devnet"
+      }
+    ]
+  }
+}
