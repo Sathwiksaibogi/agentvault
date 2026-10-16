@@ -432,3 +432,99 @@ button {
     padding: 20px;
   }
 }
+
+
+.workflow-entry:not(:last-child) {
+  border-bottom: 1px solid #253248;
+}
+
+.workflow-entry .list-row {
+  border-bottom: none;
+}
+
+.workflow-toggle {
+  padding: 9px 13px;
+  border: 1px solid #43416e;
+  background: #252343;
+  color: #c8bbff;
+  border-radius: 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.workflow-toggle:hover {
+  background: #34305c;
+}
+
+.workflow-toggle:focus-visible {
+  outline: 2px solid #a897ff;
+  outline-offset: 3px;
+}
+
+.workflow-details {
+  padding: 24px;
+  background: #0b1425;
+  border-top: 1px solid #253248;
+}
+
+.workflow-details-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px 30px;
+}
+
+.workflow-details-grid > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 8px;
+}
+
+.workflow-details-grid span,
+.workflow-transaction span {
+  color: #8293ab;
+  font-size: 12px;
+}
+
+.workflow-details-grid strong,
+.workflow-details-grid code {
+  color: #e1e8f4;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.workflow-transaction {
+  margin-top: 24px;
+  border-top: 1px solid #253248;
+  padding-top: 18px;
+}
+
+.workflow-transaction a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: #a897ff;
+  text-decoration: none;
+}
+
+.workflow-transaction p {
+  color: #8190a8;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+@media (max-width: 760px) {
+  .workflow-entry .list-row {
+    flex-wrap: wrap;
+  }
+
+  .workflow-toggle {
+    margin-left: 49px;
+  }
+
+  .workflow-details-grid {
+    grid-template-columns: 1fr;
+  }
+}

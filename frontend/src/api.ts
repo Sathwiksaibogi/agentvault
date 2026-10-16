@@ -50,6 +50,8 @@ export interface WorkflowStatus {
   workflowKind: string;
   taskId: number;
   amountBaseUnits: number;
+  network: string;
+  recipient: string;
   approval: {
     signatureVerified: boolean;
     currentlyValid: boolean;
@@ -64,6 +66,8 @@ export interface WorkflowStatus {
     payment: {
       signature: string;
       recoveryState: string;
+      amountBaseUnits: number;
+      nonce: string;
     } | null;
   };
 }

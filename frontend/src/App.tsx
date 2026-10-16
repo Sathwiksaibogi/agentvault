@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useState } from "react";
 import {
   Activity,
@@ -13,11 +12,7 @@ import {
   Workflow,
 } from "lucide-react";
 
-import {
-  loadDashboard,
-  type DashboardData,
-  type WorkflowStatus,
-} from "./api";
+import { loadDashboard, type DashboardData, type WorkflowStatus } from "./api";
 
 function formatAmount(amount: string, decimals: number): string {
   const value = BigInt(amount);
@@ -79,6 +74,9 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [expandedWorkflowId, setExpandedWorkflowId] = useState<string | null>(
+    null
+  );
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -92,7 +90,7 @@ export default function App() {
       setError(
         cause instanceof Error
           ? cause.message
-          : "Unable to load AgentVault data",
+          : "Unable to load AgentVault data"
       );
     } finally {
       setLoading(false);
@@ -100,34 +98,34 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-  let cancelled = false;
+    let cancelled = false;
 
-  void loadDashboard()
-    .then((result) => {
-      if (cancelled) return;
+    void loadDashboard()
+      .then((result) => {
+        if (cancelled) return;
 
-      setData(result);
-      setUpdatedAt(new Date());
-    })
-    .catch((cause: unknown) => {
-      if (cancelled) return;
+        setData(result);
+        setUpdatedAt(new Date());
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return;
 
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "Unable to load AgentVault data",
-      );
-    })
-    .finally(() => {
-      if (!cancelled) {
-        setLoading(false);
-      }
-    });
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Unable to load AgentVault data"
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
 
-  return () => {
-    cancelled = true;
-  };
-}, []);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const decimals = data?.treasury.decimals ?? 6;
 
@@ -174,9 +172,8 @@ export default function App() {
           </h1>
 
           <p>
-            Monitor your shared treasury, independent AI agents,
-            spending policies, owner approvals, and on-chain activity
-            from one place.
+            Monitor your shared treasury, independent AI agents, spending
+            policies, owner approvals, and on-chain activity from one place.
           </p>
 
           <div className="hero-footer">
@@ -214,14 +211,9 @@ export default function App() {
                   <Wallet size={19} />
                 </div>
                 <div className="metric-value">
-                  {formatAmount(
-                    data.treasury.balanceBaseUnits,
-                    decimals,
-                  )}
+                  {formatAmount(data.treasury.balanceBaseUnits, decimals)}
                 </div>
-                <div className="metric-caption">
-                  Custom Devnet test tokens
-                </div>
+                <div className="metric-caption">Custom Devnet test tokens</div>
               </div>
 
               <div className="panel metric-card">
@@ -230,14 +222,9 @@ export default function App() {
                   <LockKeyhole size={19} />
                 </div>
                 <div className="metric-value">
-                  {formatAmount(
-                    data.treasury.reservedBaseUnits,
-                    decimals,
-                  )}
+                  {formatAmount(data.treasury.reservedBaseUnits, decimals)}
                 </div>
-                <div className="metric-caption">
-                  Committed to task budgets
-                </div>
+                <div className="metric-caption">Committed to task budgets</div>
               </div>
 
               <div className="panel metric-card">
@@ -246,10 +233,7 @@ export default function App() {
                   <ArrowUpRight size={19} />
                 </div>
                 <div className="metric-value accent-value">
-                  {formatAmount(
-                    data.treasury.availableBaseUnits,
-                    decimals,
-                  )}
+                  {formatAmount(data.treasury.availableBaseUnits, decimals)}
                 </div>
                 <div className="metric-caption">
                   Available for new reservations
@@ -263,25 +247,17 @@ export default function App() {
                   <div className="section-eyebrow">ACCESS CONTROL</div>
                   <h2>Registered agents</h2>
                 </div>
-                <span className="count-pill">
-                  {data.agents.length} agents
-                </span>
+                <span className="count-pill">{data.agents.length} agents</span>
               </div>
 
               <div className="agents-grid">
                 {data.agents.map((agent) => {
-                  const budget = BigInt(
-                    agent.task.budgetBaseUnits,
-                  );
+                  const budget = BigInt(agent.task.budgetBaseUnits);
 
-                  const spent = BigInt(
-                    agent.task.spentBaseUnits,
-                  );
+                  const spent = BigInt(agent.task.spentBaseUnits);
 
                   const percent =
-                    budget === 0n
-                      ? 0
-                      : Number((spent * 100n) / budget);
+                    budget === 0n ? 0 : Number((spent * 100n) / budget);
 
                   return (
                     <article className="panel agent-card" key={agent.id}>
@@ -312,7 +288,7 @@ export default function App() {
                         <strong>
                           {formatAmount(
                             agent.task.remainingBaseUnits,
-                            decimals,
+                            decimals
                           )}
                         </strong>
                       </div>
@@ -329,17 +305,11 @@ export default function App() {
                       <div className="budget-caption">
                         <span>
                           Spent{" "}
-                          {formatAmount(
-                            agent.task.spentBaseUnits,
-                            decimals,
-                          )}
+                          {formatAmount(agent.task.spentBaseUnits, decimals)}
                         </span>
                         <span>
                           Budget{" "}
-                          {formatAmount(
-                            agent.task.budgetBaseUnits,
-                            decimals,
-                          )}
+                          {formatAmount(agent.task.budgetBaseUnits, decimals)}
                         </span>
                       </div>
 
@@ -350,9 +320,7 @@ export default function App() {
                         </div>
                         <div>
                           <span>Allowed recipient</span>
-                          <code>
-                            {shortAddress(agent.task.recipient)}
-                          </code>
+                          <code>{shortAddress(agent.task.recipient)}</code>
                         </div>
                         <div>
                           <span>Next nonce</span>
@@ -361,9 +329,7 @@ export default function App() {
                         <div>
                           <span>Task expiry</span>
                           <strong>
-                            {formatDate(
-                              Number(agent.task.expiresAtUnix),
-                            )}
+                            {formatDate(Number(agent.task.expiresAtUnix))}
                           </strong>
                         </div>
                       </div>
@@ -389,28 +355,144 @@ export default function App() {
 
                 {data.workflows.map((workflow) => {
                   const status = workflowStatus(workflow);
+                  const expanded = expandedWorkflowId === workflow.requestId;
+                  const payment = workflow.execution.payment;
 
                   return (
-                    <div className="list-row" key={workflow.requestId}>
-                      <div className="list-icon">
-                        <ShieldCheck size={19} />
-                      </div>
+                    <div className="workflow-entry" key={workflow.requestId}>
+                      <div className="list-row">
+                        <div className="list-icon">
+                          <ShieldCheck size={19} />
+                        </div>
 
-                      <div className="list-description">
-                        <strong>{workflow.requestId}</strong>
-                        <span>
-                          {workflow.assignedAgent} ·{" "}
-                          {formatAmount(
-                            String(workflow.amountBaseUnits),
-                            decimals,
-                          )}{" "}
-                          test tokens
+                        <div className="list-description">
+                          <strong>{workflow.requestId}</strong>
+                          <span>
+                            {workflow.assignedAgent} ·{" "}
+                            {formatAmount(
+                              String(workflow.amountBaseUnits),
+                              decimals
+                            )}{" "}
+                            test tokens
+                          </span>
+                        </div>
+
+                        <span className={`status ${status.tone}`}>
+                          {status.label}
                         </span>
+
+                        <button
+                          type="button"
+                          className="workflow-toggle"
+                          aria-expanded={expanded}
+                          aria-controls={`details-${workflow.requestId}`}
+                          onClick={() =>
+                            setExpandedWorkflowId(
+                              expanded ? null : workflow.requestId
+                            )
+                          }
+                        >
+                          {expanded ? "Hide details" : "View details"}
+                        </button>
                       </div>
 
-                      <span className={`status ${status.tone}`}>
-                        {status.label}
-                      </span>
+                      {expanded && (
+                        <div
+                          className="workflow-details"
+                          id={`details-${workflow.requestId}`}
+                        >
+                          <div className="workflow-details-grid">
+                            <div>
+                              <span>Owner approval signature</span>
+                              <strong>
+                                {workflow.approval.signatureVerified
+                                  ? "Verified"
+                                  : "Not verified"}
+                              </strong>
+                            </div>
+
+                            <div>
+                              <span>Approval authorization</span>
+                              <strong>
+                                {workflow.approval.currentlyValid
+                                  ? "Within expiry"
+                                  : "Expired"}
+                              </strong>
+                            </div>
+
+                            <div>
+                              <span>Approval expires</span>
+                              <strong>
+                                {formatDate(workflow.approval.expiresAtUnix)}
+                              </strong>
+                            </div>
+
+                            <div>
+                              <span>AI decision</span>
+                              <strong>
+                                {workflow.aiDecision.receiptFilePresent
+                                  ? "Receipt file present — unverified here"
+                                  : "No saved receipt"}
+                              </strong>
+                            </div>
+
+                            <div>
+                              <span>Workflow type</span>
+                              <strong>{workflow.workflowKind}</strong>
+                            </div>
+
+                            <div>
+                              <span>Task ID</span>
+                              <strong>{workflow.taskId}</strong>
+                            </div>
+
+                            <div>
+                              <span>Allowed recipient</span>
+                              <code>{workflow.recipient}</code>
+                            </div>
+
+                            <div>
+                              <span>Execution journal</span>
+                              <strong>
+                                {workflow.execution.journalStatus}
+                              </strong>
+                            </div>
+
+                            <div>
+                              <span>Transaction recovery</span>
+                              <strong>
+                                {payment?.recoveryState ?? "No saved payment"}
+                              </strong>
+                            </div>
+
+                            <div>
+                              <span>Recorded nonce</span>
+                              <strong>{payment?.nonce ?? "—"}</strong>
+                            </div>
+                          </div>
+
+                          {payment && (
+                            <div className="workflow-transaction">
+                              <span>Saved transaction signature</span>
+
+                              <a
+                                href={`https://explorer.solana.com/tx/${payment.signature}?cluster=devnet`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                {shortAddress(payment.signature)}
+                                <ExternalLink size={14} />
+                              </a>
+
+                              <p>
+                                A saved signature does not prove a payment was
+                                confirmed. Unresolved transactions may not
+                                appear in Explorer.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -452,16 +534,13 @@ export default function App() {
                           : "Operations Agent"}
                       </strong>
                       <span>
-                        {shortAddress(entry.signature)} · Slot{" "}
-                        {entry.slot}
+                        {shortAddress(entry.signature)} · Slot {entry.slot}
                       </span>
                     </div>
 
                     <span
                       className={
-                        entry.succeeded
-                          ? "status success"
-                          : "status warning"
+                        entry.succeeded ? "status success" : "status warning"
                       }
                     >
                       {entry.succeeded ? "Succeeded" : "Failed"}
@@ -474,12 +553,10 @@ export default function App() {
             </section>
 
             <footer className="footer">
+              <span>AgentVault · Solana Fall School Demo</span>
               <span>
-                AgentVault · Solana Fall School Demo
-              </span>
-              <span>
-                On-chain policies enforce spending limits.
-                AI decisions alone cannot move funds.
+                On-chain policies enforce spending limits. AI decisions alone
+                cannot move funds.
               </span>
             </footer>
           </>
