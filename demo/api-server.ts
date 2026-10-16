@@ -82,6 +82,51 @@ function sendJson(response: ServerResponse, status: number, data: unknown) {
   response.end(JSON.stringify(data));
 }
 
+type CacheEntry = {
+  value: unknown;
+  expiresAt: number;
+};
+
+const readCache = new Map<string, CacheEntry>();
+const pendingReads = new Map<string, Promise<unknown>>();
+
+async function cachedRead<T>(
+  key: string,
+  loader: () => Promise<T>,
+  ttlMs = 30_000
+): Promise<T> {
+  const cached = readCache.get(key);
+
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.value as T;
+  }
+
+  const pending = pendingReads.get(key);
+
+  if (pending) {
+    return pending as Promise<T>;
+  }
+
+  const job = (async () => {
+    try {
+      const value = await loader();
+
+      readCache.set(key, {
+        value,
+        expiresAt: Date.now() + ttlMs,
+      });
+
+      return value;
+    } finally {
+      pendingReads.delete(key);
+    }
+  })();
+
+  pendingReads.set(key, job);
+
+  return job;
+}
+
 async function getTreasuryData() {
   const vaultPda = new PublicKey(state.vault);
   const treasuryPda = new PublicKey(state.treasury);
@@ -369,7 +414,7 @@ async function getActivityData() {
   assert.equal(NETWORK, "devnet", "Activity API currently supports Devnet");
 
   // Reuse our verified on-chain agent reader.
-  const { agents } = await getAgentsData();
+  const { agents } = await cachedRead("agents", getAgentsData, 30_000);
 
   const pages = await Promise.all(
     agents.map(async (agent) => {
@@ -432,7 +477,7 @@ const server = createServer(async (request, response) => {
 
   if (pathname === "/api/treasury") {
     try {
-      const result = await getTreasuryData();
+      const result = await cachedRead("treasury", getTreasuryData, 30_000);
       sendJson(response, 200, result);
     } catch (error) {
       console.error(
@@ -450,7 +495,7 @@ const server = createServer(async (request, response) => {
 
   if (pathname === "/api/agents") {
     try {
-      const result = await getAgentsData();
+      const result = await cachedRead("agents", getAgentsData, 30_000);
 
       sendJson(response, 200, result);
     } catch (error) {
@@ -482,7 +527,13 @@ const server = createServer(async (request, response) => {
 
   if (workflowMatch) {
     try {
-      const result = await getWorkflowData(workflowMatch[1]);
+      const requestId = workflowMatch[1];
+
+      const result = await cachedRead(
+        `workflow:${requestId}`,
+        () => getWorkflowData(requestId),
+        15_000
+      );
 
       if (result === null) {
         sendJson(response, 404, {
@@ -509,7 +560,7 @@ const server = createServer(async (request, response) => {
 
   if (pathname === "/api/activity") {
     try {
-      const result = await getActivityData();
+      const result = await cachedRead("activity", getActivityData, 60_000);
 
       sendJson(response, 200, result);
     } catch (error) {
