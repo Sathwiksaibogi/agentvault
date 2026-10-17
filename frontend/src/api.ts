@@ -79,10 +79,10 @@ export interface DashboardData {
   workflows: WorkflowStatus[];
 }
 
-async function getJson<T>(path: string): Promise<T> {
+async function getJson<T>(path: string, timeoutMs = 12_000): Promise<T> {
   const response = await fetch(path, {
     cache: "no-store",
-    signal: AbortSignal.timeout(12_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!response.ok) {
@@ -180,7 +180,23 @@ function isDemoSnapshot(value: unknown): value is DemoSnapshot {
   );
 }
 
-export async function loadDashboard(): Promise<DashboardView> {
+/** Vault selection is explicit so the CLI snapshot is never reused for Vault 2. */
+export type VaultSelection = "cli" | "web";
+
+export async function loadDashboard(
+  selectedVault: VaultSelection = "cli"
+): Promise<DashboardView> {
+  if (selectedVault === "web") {
+    // This endpoint returns ONLY web-vault on-chain accounts. Until we build
+    // an authenticated approval service it deliberately has no workflows.
+    // If unavailable, report the error, not Vault 1's historical snapshot.
+    const web = await getJson<DashboardData>("/api/web/dashboard", 25_000);
+    if (web.treasury.vault !== "C3mUdw6QPgPdFCC4gFnz8uyrMaD9Y2Qcz4xaLcdWddep") {
+      throw new Error("Web dashboard returned an unexpected vault");
+    }
+    return { ...web, dataSource: "live", snapshotCapturedAt: null };
+  }
+
   try {
     // Prefer fresh data from the real Devnet backend.
     const live = await loadLiveDashboard();
@@ -199,10 +215,18 @@ export async function loadDashboard(): Promise<DashboardView> {
     // Never silently pass stale data off as live.
     const snapshot = await getJson<unknown>("/demo-snapshot.json");
 
-    if (!isDemoSnapshot(snapshot)) {
-      throw new Error("Live API unavailable and demo snapshot is invalid", {
-        cause: liveError,
-      });
+    if (
+      !isDemoSnapshot(snapshot) ||
+      snapshot.dashboard.treasury.vault !==
+        "9uwN9YvPXKTdnRjKth6uAxK9AcWWLA5ckXMGdb5KbuXB"
+    ) {
+      const fallbackError = new Error(
+        "Live API unavailable or CLI demo snapshot is invalid"
+      ) as Error & { cause: unknown };
+
+      fallbackError.cause = liveError;
+
+      throw fallbackError;
     }
 
     return {

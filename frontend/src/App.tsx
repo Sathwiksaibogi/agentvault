@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getPhantomProvider } from "./phantom";
+import type { VaultSelection } from "./api";
 import {
   registerWebAgents,
   type WebAgentRegistrationSummary,
@@ -82,6 +83,8 @@ function workflowStatus(workflow: WorkflowStatus): {
 }
 
 export default function App() {
+  const [selectedVault, setSelectedVault] = useState<VaultSelection>("cli");
+  const selectedVaultRef = useRef<VaultSelection>("cli");
   const [data, setData] = useState<DashboardView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -114,32 +117,34 @@ export default function App() {
     setError(null);
 
     try {
-      const result = await loadDashboard();
+      const result = await loadDashboard(selectedVault);
+      if (selectedVaultRef.current !== selectedVault) return;
       setData(result);
       setUpdatedAt(new Date());
     } catch (cause) {
+      if (selectedVaultRef.current !== selectedVault) return;
       setError(
         cause instanceof Error
           ? cause.message
           : "Unable to load AgentVault data"
       );
     } finally {
-      setLoading(false);
+      if (selectedVaultRef.current === selectedVault) setLoading(false);
     }
-  }, []);
+  }, [selectedVault]);
 
   useEffect(() => {
     let cancelled = false;
 
-    void loadDashboard()
+    void loadDashboard(selectedVault)
       .then((result) => {
-        if (cancelled) return;
+        if (cancelled || selectedVaultRef.current !== selectedVault) return;
 
         setData(result);
         setUpdatedAt(new Date());
       })
       .catch((cause: unknown) => {
-        if (cancelled) return;
+        if (cancelled || selectedVaultRef.current !== selectedVault) return;
 
         setError(
           cause instanceof Error
@@ -156,7 +161,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [selectedVault]);
 
   const decimals = data?.treasury.decimals ?? 6;
 
@@ -310,6 +315,27 @@ export default function App() {
         </div>
 
         <div className="header-actions">
+          <div className="vault-picker">
+            <label htmlFor="vault-switch">Viewing</label>
+            <select
+              id="vault-switch"
+              className="vault-picker-select"
+              value={selectedVault}
+              onChange={(event) => {
+                const next = event.target.value as VaultSelection;
+                selectedVaultRef.current = next;
+                setSelectedVault(next);
+                setData(null);
+                setUpdatedAt(null);
+                setError(null);
+                setLoading(true);
+                setExpandedWorkflowId(null);
+              }}
+            >
+              <option value="cli">Vault 1 · CLI Demo</option>
+              <option value="web">Vault 2 · Phantom</option>
+            </select>
+          </div>
           <span className="network-pill">
             <span
               className={`network-dot ${
@@ -411,8 +437,8 @@ export default function App() {
                 }`}
               >
                 {walletAddress === data?.treasury.owner
-                  ? "Connected address matches vault owner"
-                  : "Connected wallet is not vault owner"}
+                  ? "Connected address matches selected vault owner"
+                  : "Connected wallet is not selected vault owner"}
               </span>
             )}
 
@@ -689,7 +715,11 @@ export default function App() {
 
               <div className="panel list-panel">
                 {data.workflows.length === 0 && (
-                  <div className="empty-row">No workflows found.</div>
+                  <div className="empty-row">
+                    {selectedVault === "web"
+                      ? "No Vault 2 workflow approvals yet. Creating an on-chain task is not an owner-signed AI payment workflow."
+                      : "No workflows found."}
+                  </div>
                 )}
 
                 {data.workflows.map((workflow) => {

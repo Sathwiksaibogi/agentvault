@@ -11,6 +11,7 @@ import { getAccount, getMint, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
 import type { Agentvault } from "../target/types/agentvault";
 import { NETWORK, RPC_URL, RUNTIME_DIR } from "./runtime-config";
+import { getWebVaultDashboard } from "./web-vault-readonly";
 
 import bs58 from "bs58";
 
@@ -472,6 +473,32 @@ const server = createServer(async (request, response) => {
       mode: "read-only",
       status: "running",
     });
+    return;
+  }
+
+  // Vault 2 is read-only: never read Vault 1 journal or approvals here.
+  if (pathname === "/api/web/dashboard") {
+    if (NETWORK !== "devnet") {
+      sendJson(response, 404, { error: "Web vault available on Devnet only" });
+      return;
+    }
+
+    try {
+      const result = await cachedRead(
+        "web-dashboard",
+        () => getWebVaultDashboard(connection, program, state.genesisHash),
+        30_000
+      );
+      sendJson(response, 200, result);
+    } catch (error) {
+      console.error(
+        "Web vault read failed:",
+        error instanceof Error ? error.message : error
+      );
+      sendJson(response, 503, {
+        error: "Web vault data temporarily unavailable",
+      });
+    }
     return;
   }
 
