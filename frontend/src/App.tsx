@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { getPhantomProvider } from "./phantom";
 import {
+  registerWebAgents,
+  type WebAgentRegistrationSummary,
+} from "./registerWebAgents";
+import {
   initializeWebVault,
   type WalletTransactionSigner,
   type WebVaultSetup,
@@ -99,6 +103,11 @@ export default function App() {
   const [depositError, setDepositError] = useState<string | null>(null);
   const [depositResult, setDepositResult] =
     useState<WebVaultDepositResult | null>(null);
+
+  const [agentSetupBusy, setAgentSetupBusy] = useState(false);
+  const [agentSetupError, setAgentSetupError] = useState<string | null>(null);
+  const [agentSetup, setAgentSetup] =
+    useState<WebAgentRegistrationSummary | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -214,6 +223,33 @@ export default function App() {
     }
   }
 
+  async function setupWebAgents() {
+    const provider = getPhantomProvider();
+
+    if (
+      !provider?.publicKey ||
+      !walletAddress ||
+      provider.publicKey.toBase58() !== walletAddress
+    ) {
+      setAgentSetupError("Connect the correct Phantom wallet.");
+      return;
+    }
+
+    setAgentSetupBusy(true);
+    setAgentSetupError(null);
+
+    try {
+      const result = await registerWebAgents(provider);
+      setAgentSetup(result);
+    } catch (cause) {
+      setAgentSetupError(
+        cause instanceof Error ? cause.message : "Agent registration failed"
+      );
+    } finally {
+      setAgentSetupBusy(false);
+    }
+  }
+
   async function connectWallet() {
     const provider = getPhantomProvider();
 
@@ -326,6 +362,16 @@ export default function App() {
           </button>
 
           <button
+            type="button"
+            className="refresh-button"
+            disabled={!walletAddress || agentSetupBusy}
+            onClick={() => void setupWebAgents()}
+          >
+            <Bot size={16} />
+            {agentSetupBusy ? "Registering..." : "Setup AI Agents"}
+          </button>
+
+          <button
             className="refresh-button"
             onClick={() => void refresh()}
             disabled={loading}
@@ -408,6 +454,30 @@ export default function App() {
             >
               View confirmed deposit transaction
             </a>
+          </div>
+        )}
+
+        {agentSetupError && (
+          <div className="wallet-error" role="alert">
+            {agentSetupError}
+          </div>
+        )}
+
+        {agentSetup && (
+          <div className="panel" style={{ padding: 20 }}>
+            <h3>Web vault agents configured</h3>
+
+            {agentSetup.agents.map((agent) => (
+              <div key={agent.agentPda}>
+                <h4>{agent.name}</h4>
+                <p>Agent PDA: {agent.agentPda}</p>
+                <p>Task PDA: {agent.taskPda}</p>
+              </div>
+            ))}
+
+            <p>Reserved: {agentSetup.totalReservedBaseUnits} base units</p>
+
+            <p>Confirmed setup transactions: {agentSetup.signatures.length}</p>
           </div>
         )}
 
