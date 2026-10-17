@@ -1,3 +1,5 @@
+import type { PublicKey, Transaction } from "@solana/web3.js";
+
 export interface WalletPublicKey {
   toBase58(): string;
 }
@@ -5,11 +7,15 @@ export interface WalletPublicKey {
 export interface PhantomProvider {
   isPhantom?: boolean;
 
+  publicKey: PublicKey | null;
+
   connect(): Promise<{
     publicKey: WalletPublicKey;
   }>;
 
   disconnect(): Promise<void>;
+
+  signTransaction(transaction: Transaction): Promise<Transaction>;
 }
 
 declare global {

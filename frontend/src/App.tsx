@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { getPhantomProvider } from "./phantom";
 import {
+  initializeWebVault,
+  type WalletTransactionSigner,
+  type WebVaultSetup,
+} from "./initializeWebVault";
+import { depositWebVault, type WebVaultDepositResult } from "./depositWebVault";
+import {
   Activity,
   ArrowUpRight,
   Bot,
@@ -85,6 +91,15 @@ export default function App() {
 
   const [walletError, setWalletError] = useState<string | null>(null);
 
+  const [vaultSetupBusy, setVaultSetupBusy] = useState(false);
+  const [vaultSetupError, setVaultSetupError] = useState<string | null>(null);
+  const [webVault, setWebVault] = useState<WebVaultSetup | null>(null);
+
+  const [depositBusy, setDepositBusy] = useState(false);
+  const [depositError, setDepositError] = useState<string | null>(null);
+  const [depositResult, setDepositResult] =
+    useState<WebVaultDepositResult | null>(null);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -135,6 +150,69 @@ export default function App() {
   }, []);
 
   const decimals = data?.treasury.decimals ?? 6;
+
+  async function setupWebVault() {
+    const provider = getPhantomProvider();
+
+    if (!provider?.publicKey || !walletAddress) {
+      setVaultSetupError("Connect Phantom before creating a vault.");
+      return;
+    }
+
+    if (provider.publicKey.toBase58() !== walletAddress) {
+      setVaultSetupError("Wallet connection changed. Reconnect Phantom.");
+      return;
+    }
+
+    const signer: WalletTransactionSigner = provider;
+
+    if (typeof signer.signTransaction !== "function") {
+      setVaultSetupError("Phantom transaction signing is unavailable.");
+      return;
+    }
+
+    setVaultSetupBusy(true);
+    setVaultSetupError(null);
+    setWebVault(null);
+
+    try {
+      const result = await initializeWebVault(signer);
+      setWebVault(result);
+    } catch (cause) {
+      setVaultSetupError(
+        cause instanceof Error ? cause.message : "Vault setup failed"
+      );
+    } finally {
+      setVaultSetupBusy(false);
+    }
+  }
+
+  async function handleWebVaultDeposit() {
+    const provider = getPhantomProvider();
+
+    if (
+      !provider?.publicKey ||
+      !walletAddress ||
+      provider.publicKey.toBase58() !== walletAddress
+    ) {
+      setDepositError("Connect the correct Phantom wallet first.");
+      return;
+    }
+
+    setDepositBusy(true);
+    setDepositError(null);
+
+    try {
+      const result = await depositWebVault(provider);
+      setDepositResult(result);
+    } catch (cause) {
+      setDepositError(
+        cause instanceof Error ? cause.message : "Web vault deposit failed"
+      );
+    } finally {
+      setDepositBusy(false);
+    }
+  }
 
   async function connectWallet() {
     const provider = getPhantomProvider();
@@ -228,6 +306,26 @@ export default function App() {
           </button>
 
           <button
+            type="button"
+            className="refresh-button"
+            disabled={!walletAddress || walletBusy || vaultSetupBusy}
+            onClick={() => void setupWebVault()}
+          >
+            <Wallet size={16} />
+            {vaultSetupBusy ? "Waiting for Phantom..." : "Create Web Vault"}
+          </button>
+
+          <button
+            type="button"
+            className="refresh-button"
+            disabled={!walletAddress || depositBusy || !!depositResult}
+            onClick={() => void handleWebVaultDeposit()}
+          >
+            <Wallet size={16} />
+            {depositBusy ? "Waiting for Phantom..." : "Deposit 0.4 Test Tokens"}
+          </button>
+
+          <button
             className="refresh-button"
             onClick={() => void refresh()}
             disabled={loading}
@@ -284,6 +382,67 @@ export default function App() {
             </div>
           )}
         </section>
+
+        {depositError && (
+          <div className="wallet-error" role="alert">
+            {depositError}
+          </div>
+        )}
+
+        {depositResult && (
+          <div
+            className="panel"
+            style={{ padding: 20, overflowWrap: "anywhere" }}
+          >
+            <strong>Web vault deposit confirmed</strong>
+            <p>Deposited: 0.4 custom Devnet test tokens</p>
+            <p>Treasury: {depositResult.treasury}</p>
+            <p>
+              Treasury balance: {depositResult.treasuryBalanceBaseUnits} base
+              units
+            </p>
+            <a
+              href={`https://explorer.solana.com/tx/${depositResult.signature}?cluster=devnet`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              View confirmed deposit transaction
+            </a>
+          </div>
+        )}
+
+        {vaultSetupError && (
+          <div className="wallet-error" role="alert">
+            {vaultSetupError}
+          </div>
+        )}
+
+        {webVault && (
+          <div
+            className="panel"
+            style={{ padding: 20, overflowWrap: "anywhere" }}
+          >
+            <strong>Phantom-owned vault initialized</strong>
+            <p>Owner: {webVault.owner}</p>
+            <p>Vault ID: {webVault.vaultId}</p>
+            <p>Vault PDA: {webVault.vault}</p>
+            <p>Treasury ATA: {webVault.treasury}</p>
+            <p>Transactions submitted: {webVault.signatures.length}</p>
+
+            <a
+              href={`https://explorer.solana.com/address/${webVault.vault}?cluster=devnet`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Inspect vault on Solana Explorer
+            </a>
+
+            <p>
+              This is the new web vault. The dashboard still displays the
+              existing CLI-owned vault until we implement vault selection.
+            </p>
+          </div>
+        )}
 
         {data?.dataSource === "snapshot" && (
           <div className="snapshot-banner" role="status">
