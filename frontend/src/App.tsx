@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getPhantomProvider } from "./phantom";
 import type { VaultSelection } from "./api";
+import { WebWorkflowForm } from "./WebWorkflowForm";
 import {
   registerWebAgents,
   type WebAgentRegistrationSummary,
@@ -703,6 +704,10 @@ export default function App() {
                 })}
               </div>
             </section>
+
+            {selectedVault === "web" && data?.dataSource === "live" && (
+              <WebWorkflowForm dashboard={data} walletAddress={walletAddress} />
+            )}
 
             <section className="section">
               <div className="section-heading">

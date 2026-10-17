@@ -4,6 +4,7 @@ import { strict as assert } from "node:assert";
 import { createServer, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { handleWebWorkflowApi } from "./web-workflow-api";
 
 import { Connection, PublicKey } from "@solana/web3.js";
 
@@ -456,6 +457,16 @@ async function getActivityData() {
 }
 
 const server = createServer(async (request, response) => {
+  if (
+    await handleWebWorkflowApi(request, response, {
+      connection,
+      program,
+      genesisHash: state.genesisHash,
+    })
+  ) {
+    return;
+  }
+
   if (request.method !== "GET") {
     sendJson(response, 405, {
       error: "Method not allowed",

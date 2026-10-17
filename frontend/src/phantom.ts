@@ -16,6 +16,14 @@ export interface PhantomProvider {
   disconnect(): Promise<void>;
 
   signTransaction(transaction: Transaction): Promise<Transaction>;
+
+  signMessage?(
+    message: Uint8Array,
+    display?: "utf8" | "hex"
+  ): Promise<{
+    signature: Uint8Array;
+    publicKey: PublicKey;
+  }>;
 }
 
 declare global {
