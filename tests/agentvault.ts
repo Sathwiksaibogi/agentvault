@@ -7,6 +7,8 @@ import {
   SystemProgram,
   LAMPORTS_PER_SOL,
   SYSVAR_CLOCK_PUBKEY,
+  Transaction,
+  sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import {
   createMint,
@@ -18,6 +20,7 @@ import {
   createMintToInstruction,
   createAccount,
   mintTo,
+  freezeAccount,
 } from "@solana/spl-token";
 import { strict as assert } from "assert";
 
@@ -3544,6 +3547,547 @@ describe("AgentVault - Vault Initialization", () => {
     console.log("Next payment nonce:", taskAAfter.nextNonce.toString());
   });
 
+  it("rejects payments using an incorrect token mint", async () => {
+    // STEP 1: Create a different, valid SPL token mint.
+    const wrongMint = await createMint(
+      provider.connection,
+      payer,
+      owner,
+      null,
+      6,
+      undefined,
+      { commitment: "confirmed" },
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.ok(!wrongMint.equals(tokenMint));
+
+    // STEP 2: Derive Agent A's PDA.
+    const [agentAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        vaultPda.toBuffer(),
+        agentAKeypair.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    // STEP 3: Derive Agent A's Task PDA.
+    const [taskAPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        agentAPda.toBuffer(),
+        taskA1Id.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 4: Derive the legitimate token accounts.
+    const treasuryAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      vaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    const recipientAta = getAssociatedTokenAddressSync(
+      tokenMint,
+      taskA1Recipient,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    // STEP 5: Verify the existing policy is valid.
+    const agentBefore = await program.account.agent.fetch(
+      agentAPda,
+      "processed"
+    );
+
+    const taskBefore = await program.account.task.fetch(
+      taskAPda,
+      "processed"
+    );
+
+    const vaultBefore = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    assert.ok(agentBefore.authority.equals(agentAKeypair.publicKey));
+    assert.strictEqual(agentBefore.active, true);
+    assert.strictEqual(vaultBefore.paused, false);
+    assert.strictEqual(taskBefore.active, true);
+    assert.ok(taskBefore.recipient.equals(taskA1Recipient));
+
+    const paymentAmount = new BN(10_000);
+    const paymentNonce = taskBefore.nextNonce;
+
+    assert.ok(
+      taskBefore.budget.sub(taskBefore.spent).gte(paymentAmount)
+    );
+
+    assert.ok(vaultBefore.totalReserved.gte(paymentAmount));
+
+    // STEP 6: Record balances before the rejected payment.
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const recipientBefore = await getAccount(
+      provider.connection,
+      recipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 7: Attempt payment with the incorrect mint.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .executeTaskPayment(paymentAmount, paymentNonce)
+          .accountsPartial({
+            agentAuthority: agentAKeypair.publicKey,
+            vault: vaultPda,
+            agent: agentAPda,
+            task: taskAPda,
+            tokenMint: wrongMint,
+            treasury: treasuryAta,
+            recipient: taskA1Recipient,
+            recipientToken: recipientAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([agentAKeypair])
+          .rpc();
+      },
+      (error: any) => {
+        const details = [
+          error?.error?.errorCode?.code ?? "",
+          error?.error?.errorCode?.number ?? "",
+          error?.message ?? "",
+          ...(error?.logs ?? []),
+        ].join("\n");
+
+        assert.match(
+          details,
+          /ConstraintHasOne|2001|0x7d1|has one constraint/i
+        );
+
+        return true;
+      }
+    );
+
+    // STEP 8: Fetch balances after rejection.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      treasuryAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const recipientAfter = await getAccount(
+      provider.connection,
+      recipientAta,
+      "processed",
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 9: Verify no tokens moved.
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      recipientAfter.amount.toString(),
+      recipientBefore.amount.toString()
+    );
+
+    // STEP 10: Verify Task accounting is unchanged.
+    const taskAfter = await program.account.task.fetch(
+      taskAPda,
+      "processed"
+    );
+
+    assert.ok(taskAfter.spent.eq(taskBefore.spent));
+    assert.ok(taskAfter.nextNonce.eq(taskBefore.nextNonce));
+    assert.ok(taskAfter.budget.eq(taskBefore.budget));
+    assert.strictEqual(taskAfter.active, taskBefore.active);
+
+    // STEP 11: Verify Vault accounting is unchanged.
+    const vaultAfter = await program.account.vault.fetch(
+      vaultPda,
+      "processed"
+    );
+
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+    assert.ok(vaultAfter.tokenMint.equals(tokenMint));
+
+    console.log("Wrong-mint payment rejected correctly!");
+    console.log("Configured mint:", tokenMint.toBase58());
+    console.log("Rejected mint:", wrongMint.toBase58());
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+    console.log("Recipient balance:", recipientAfter.amount.toString());
+    console.log("Task spent:", taskAfter.spent.toString());
+    console.log("Task nonce:", taskAfter.nextNonce.toString());
+    console.log("Vault reserved:", vaultAfter.totalReserved.toString());
+  });
+
+  it("rolls back all payment state when the SPL Token CPI fails", async () => {
+    // STEP 1: Define an independent Vault, agent, and task.
+    const rollbackVaultId = new BN(9001);
+    const rollbackTaskId = new BN(1);
+    const rollbackBudget = new BN(100_000);
+    const depositAmount = 200_000;
+    const paymentAmount = new BN(10_000);
+
+    const rollbackAgentAuthority = Keypair.generate();
+    const rollbackRecipient = Keypair.generate().publicKey;
+
+    // STEP 2: Create a separate SPL mint with a freeze authority.
+    // The owner controls both minting and freezing.
+    const rollbackMint = await createMint(
+      provider.connection,
+      payer,
+      owner,
+      owner,
+      6,
+      undefined,
+      { commitment: "confirmed" },
+      TOKEN_PROGRAM_ID
+    );
+
+    // STEP 3: Derive the independent Vault PDA.
+    const [rollbackVaultPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("vault"),
+        owner.toBuffer(),
+        rollbackVaultId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // STEP 4: Initialize the independent Vault.
+    await program.methods
+      .initializeVault(rollbackVaultId)
+      .accountsPartial({
+        owner,
+        vault: rollbackVaultPda,
+        tokenMint: rollbackMint,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    // STEP 5: Derive and initialize its canonical treasury.
+    const rollbackTreasuryAta = getAssociatedTokenAddressSync(
+      rollbackMint,
+      rollbackVaultPda,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    await program.methods
+      .initializeTreasury()
+      .accountsPartial({
+        owner,
+        vault: rollbackVaultPda,
+        tokenMint: rollbackMint,
+        treasury: rollbackTreasuryAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    // STEP 6: Create the owner's ATA and deposit tokens.
+    const rollbackOwnerAta = getAssociatedTokenAddressSync(
+      rollbackMint,
+      owner,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    const createOwnerAtaIx = createAssociatedTokenAccountInstruction(
+      owner,
+      rollbackOwnerAta,
+      owner,
+      rollbackMint,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    const mintTokensIx = createMintToInstruction(
+      rollbackMint,
+      rollbackOwnerAta,
+      owner,
+      depositAmount,
+      [],
+      TOKEN_PROGRAM_ID
+    );
+
+    await program.methods
+      .depositTokens(new BN(depositAmount))
+      .accountsPartial({
+        owner,
+        vault: rollbackVaultPda,
+        tokenMint: rollbackMint,
+        ownerTokenAccount: rollbackOwnerAta,
+        treasury: rollbackTreasuryAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .preInstructions([createOwnerAtaIx, mintTokensIx])
+      .rpc();
+
+    // STEP 7: Derive and register the independent agent.
+    const [rollbackAgentPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("agent"),
+        rollbackVaultPda.toBuffer(),
+        rollbackAgentAuthority.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+
+    await program.methods
+      .registerAgent(rollbackAgentAuthority.publicKey)
+      .accountsPartial({
+        owner,
+        vault: rollbackVaultPda,
+        agent: rollbackAgentPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    // STEP 8: Derive the independent task PDA.
+    const [rollbackTaskPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("task"),
+        rollbackAgentPda.toBuffer(),
+        rollbackTaskId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    // Read the actual on-chain Clock so expiry remains valid
+    // even if an earlier test advanced Surfpool's clock.
+    const clockInfo = await provider.connection.getAccountInfo(
+      SYSVAR_CLOCK_PUBKEY,
+      "confirmed"
+    );
+
+    assert.ok(clockInfo, "Clock sysvar account must exist");
+
+    const chainNow = Number(clockInfo.data.readBigInt64LE(32));
+    const rollbackExpiresAt = new BN(chainNow + 3600);
+
+    // STEP 9: Create the task and reserve its budget.
+    await program.methods
+      .createTask(
+        rollbackTaskId,
+        rollbackBudget,
+        rollbackRecipient,
+        rollbackExpiresAt
+      )
+      .accountsPartial({
+        owner,
+        vault: rollbackVaultPda,
+        agent: rollbackAgentPda,
+        tokenMint: rollbackMint,
+        treasury: rollbackTreasuryAta,
+        task: rollbackTaskPda,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    // STEP 10: Create the recipient's canonical ATA.
+    const rollbackRecipientAta = getAssociatedTokenAddressSync(
+      rollbackMint,
+      rollbackRecipient,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    const createRecipientAtaTx = new Transaction().add(
+      createAssociatedTokenAccountInstruction(
+        owner,
+        rollbackRecipientAta,
+        rollbackRecipient,
+        rollbackMint,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
+
+    await sendAndConfirmTransaction(
+      provider.connection,
+      createRecipientAtaTx,
+      [payer],
+      { commitment: "confirmed" }
+    );
+
+    // STEP 11: Freeze the recipient ATA.
+    await freezeAccount(
+      provider.connection,
+      payer,
+      rollbackRecipientAta,
+      rollbackMint,
+      payer,
+      [],
+      { commitment: "confirmed" },
+      TOKEN_PROGRAM_ID
+    );
+
+    const frozenRecipientBefore = await getAccount(
+      provider.connection,
+      rollbackRecipientAta,
+      "confirmed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.strictEqual(
+      frozenRecipientBefore.isFrozen,
+      true,
+      "Recipient ATA must be frozen before payment"
+    );
+
+    assert.strictEqual(frozenRecipientBefore.amount.toString(), "0");
+
+    // STEP 12: Snapshot all financial state before payment.
+    const treasuryBefore = await getAccount(
+      provider.connection,
+      rollbackTreasuryAta,
+      "confirmed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const taskBefore = await program.account.task.fetch(
+      rollbackTaskPda,
+      "confirmed"
+    );
+
+    const vaultBefore = await program.account.vault.fetch(
+      rollbackVaultPda,
+      "confirmed"
+    );
+
+    assert.strictEqual(treasuryBefore.amount.toString(), "200000");
+    assert.ok(taskBefore.spent.eq(new BN(0)));
+    assert.ok(taskBefore.nextNonce.eq(new BN(0)));
+    assert.ok(taskBefore.budget.eq(rollbackBudget));
+    assert.ok(vaultBefore.totalReserved.eq(rollbackBudget));
+
+    // STEP 13: Attempt an otherwise-valid payment.
+    // The SPL Token CPI should reject the frozen recipient ATA.
+    await assert.rejects(
+      async () => {
+        await program.methods
+          .executeTaskPayment(paymentAmount, taskBefore.nextNonce)
+          .accountsPartial({
+            agentAuthority: rollbackAgentAuthority.publicKey,
+            vault: rollbackVaultPda,
+            agent: rollbackAgentPda,
+            task: rollbackTaskPda,
+            tokenMint: rollbackMint,
+            treasury: rollbackTreasuryAta,
+            recipient: rollbackRecipient,
+            recipientToken: rollbackRecipientAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([rollbackAgentAuthority])
+          .rpc();
+      },
+      (error: any) => {
+        const logs = Array.isArray(error?.logs) ? error.logs : [];
+        const transactionLogs = Array.isArray(error?.transactionLogs)
+          ? error.transactionLogs
+          : [];
+
+        const details = [
+          error?.message ?? "",
+          ...logs,
+          ...transactionLogs,
+        ].join("\n");
+
+        assert.ok(
+          details.includes(TOKEN_PROGRAM_ID.toBase58()),
+          "Expected the failure to originate from the SPL Token Program"
+        );
+
+        assert.match(
+          details,
+          /Account is frozen|AccountFrozen|custom program error: 0x11/i,
+          "Expected the SPL Token frozen-account error"
+        );
+
+        return true;
+      }
+    );
+
+    // STEP 14: Fetch all state after the failed transaction.
+    const treasuryAfter = await getAccount(
+      provider.connection,
+      rollbackTreasuryAta,
+      "confirmed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const recipientAfter = await getAccount(
+      provider.connection,
+      rollbackRecipientAta,
+      "confirmed",
+      TOKEN_PROGRAM_ID
+    );
+
+    const taskAfter = await program.account.task.fetch(
+      rollbackTaskPda,
+      "confirmed"
+    );
+
+    const vaultAfter = await program.account.vault.fetch(
+      rollbackVaultPda,
+      "confirmed"
+    );
+
+    // STEP 15: Verify token balances were rolled back.
+    assert.strictEqual(
+      treasuryAfter.amount.toString(),
+      treasuryBefore.amount.toString()
+    );
+
+    assert.strictEqual(
+      recipientAfter.amount.toString(),
+      frozenRecipientBefore.amount.toString()
+    );
+
+    assert.strictEqual(recipientAfter.isFrozen, true);
+
+    // STEP 16: Verify Task accounting was rolled back.
+    assert.ok(taskAfter.spent.eq(taskBefore.spent));
+    assert.ok(taskAfter.nextNonce.eq(taskBefore.nextNonce));
+    assert.ok(taskAfter.budget.eq(taskBefore.budget));
+    assert.strictEqual(taskAfter.active, taskBefore.active);
+
+    // STEP 17: Verify Vault reservation was rolled back.
+    assert.ok(vaultAfter.totalReserved.eq(vaultBefore.totalReserved));
+    assert.ok(vaultAfter.tokenMint.equals(rollbackMint));
+
+    console.log("Frozen-recipient CPI failure rejected correctly!");
+    console.log("Treasury balance:", treasuryAfter.amount.toString());
+    console.log("Recipient balance:", recipientAfter.amount.toString());
+    console.log("Task spent:", taskAfter.spent.toString());
+    console.log("Task nonce:", taskAfter.nextNonce.toString());
+    console.log("Vault reserved:", vaultAfter.totalReserved.toString());
+  });
+
+
   it("rejects Agent B attempting to execute Agent A's payment", async () => {
     // STEP 1: Agent B attempts to spend Agent A's funds.
     const paymentAmount = new BN(10_000);
@@ -4345,7 +4889,7 @@ describe("AgentVault - Vault Initialization", () => {
     const chainNow = await readChainTime();
 
     // Give the task time to initialize successfully.
-    const expiresAt = new BN(chainNow + 8);
+    const expiresAt = new BN(chainNow + 60);
 
     // Reuse the existing approved recipient and its ATA.
     const recipient = taskA1Recipient;
@@ -4430,24 +4974,58 @@ describe("AgentVault - Vault Initialization", () => {
 
     assert.ok(vaultAfterCreation.totalReserved.eq(new BN(220_000)));
 
-    // STEP 9: Wait until the on-chain Clock reaches expiry.
-    const waitStarted = Date.now();
-    let currentChainTime = await readChainTime();
+    // STEP 9: Advance Surfpool's clock beyond task expiry.
+const latestChainTime = await readChainTime();
 
-    while (currentChainTime < expiresAt.toNumber()) {
-      if (Date.now() - waitStarted > 45_000) {
-        throw new Error("Validator Clock did not reach task expiry in time");
-      }
+const targetUnixTime =
+  Math.max(expiresAt.toNumber(), latestChainTime) + 5;
 
-      await new Promise<void>((resolve) => setTimeout(resolve, 400));
+const response = await fetch(provider.connection.rpcEndpoint, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "surfnet_timeTravel",
+    params: [
+      {
+        absoluteTimestamp: targetUnixTime * 1000,
+      },
+    ],
+  }),
+});
 
-      currentChainTime = await readChainTime();
-    }
+assert.ok(response.ok, "Surfpool RPC request failed");
 
-    assert.ok(currentChainTime >= expiresAt.toNumber());
+const payload = (await response.json()) as {
+  result?: {
+    absoluteSlot: number;
+    blockHeight: number;
+  };
+  error?: {
+    code: number;
+    message: string;
+  };
+};
 
-    console.log("Task expiry:", expiresAt.toString());
-    console.log("On-chain time:", currentChainTime);
+assert.ok(
+  !payload.error,
+  `Surfpool time travel failed: ${payload.error?.message ?? "Unknown error"}`
+);
+
+// Verify the actual Clock sysvar, not just the RPC response.
+const currentChainTime = await readChainTime();
+
+assert.ok(
+  currentChainTime >= expiresAt.toNumber(),
+  `Expected chain time ${currentChainTime} to reach expiry ${expiresAt.toNumber()}`
+);
+
+console.log("Task expiry:", expiresAt.toString());
+console.log("On-chain time after time travel:", currentChainTime);
+console.log("Surfpool slot:", payload.result?.absoluteSlot);
 
     // STEP 10: Snapshot balances after the task expires.
     const treasuryBefore = await getAccount(
