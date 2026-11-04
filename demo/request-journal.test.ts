@@ -7,7 +7,10 @@ import { join } from "node:path";
 import { Keypair } from "@solana/web3.js";
 import * as nacl from "tweetnacl";
 
-import { claimApprovedWorkflow } from "./request-journal";
+import {
+  assertApprovalDigestMatchesJournal,
+  claimApprovedWorkflow,
+} from "./request-journal";
 
 import {
   encodeWorkflow,
@@ -80,6 +83,63 @@ test("claims a valid owner-approved request", () => {
 
   assert.deepEqual(saved, record);
   assert.equal(statSync(path).mode & 0o777, 0o600);
+});
+
+test("accepts the exact signed approval recorded in the journal", () => {
+  const signed = sign();
+  const { record } = claimApprovedWorkflow(dir, signed, scope, testTime);
+
+  assert.doesNotThrow(() =>
+    assertApprovalDigestMatchesJournal(signed, record.approvalDigest)
+  );
+});
+
+test("rejects a newly signed approval with a different recipient", () => {
+  const original = sign();
+  const { record } = claimApprovedWorkflow(dir, original, scope, testTime);
+
+  // This is another valid signature from the same owner.
+  const changed = sign({
+    ...workflow,
+    recipient: address(),
+  });
+
+  assert.equal(changed.workflow.requestId, original.workflow.requestId);
+  assert.equal(changed.workflow.assignedAgent, original.workflow.assignedAgent);
+  assert.equal(
+    changed.workflow.amountBaseUnits,
+    original.workflow.amountBaseUnits
+  );
+  assert.notEqual(changed.workflow.recipient, original.workflow.recipient);
+
+  assert.throws(
+    () => assertApprovalDigestMatchesJournal(changed, record.approvalDigest),
+    /Approval digest mismatch/
+  );
+});
+
+test("rejects a newly signed approval with a different description", () => {
+  const original = sign();
+  const { record } = claimApprovedWorkflow(dir, original, scope, testTime);
+
+  // Payment details remain the same, but the signed authorization differs.
+  const changed = sign({
+    ...workflow,
+    description: "Purchase replacement equipment urgently",
+  });
+
+  assert.equal(changed.workflow.requestId, original.workflow.requestId);
+  assert.equal(changed.workflow.recipient, original.workflow.recipient);
+  assert.equal(
+    changed.workflow.amountBaseUnits,
+    original.workflow.amountBaseUnits
+  );
+  assert.notEqual(changed.workflow.description, original.workflow.description);
+
+  assert.throws(
+    () => assertApprovalDigestMatchesJournal(changed, record.approvalDigest),
+    /Approval digest mismatch/
+  );
 });
 
 test("rejects duplicate request claims", () => {

@@ -22,6 +22,8 @@ import {
   verifyWorkflowApproval,
 } from "./signed-workflow";
 
+import { assertApprovalDigestMatchesJournal } from "./request-journal";
+
 import { loadPreparedPayment } from "./prepared-payment";
 
 import { assertSerializedAgentVaultPayment } from "./payment-transaction-guard";
@@ -53,6 +55,9 @@ async function main() {
   const claim = JSON.parse(
     readFileSync(join(RUNTIME_DIR, "journal", `${requestId}.json`), "utf8")
   );
+
+  // Ensure recovery uses the exact approval that was originally claimed.
+  assertApprovalDigestMatchesJournal(signedApproval, claim.approvalDigest);
 
   assert.strictEqual(record.network, NETWORK);
 

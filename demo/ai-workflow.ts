@@ -28,7 +28,11 @@ import {
   type TrustedWorkflow,
 } from "./workflow-policy";
 
-import { verifyWorkflowApproval, type ApprovalScope } from "./signed-workflow";
+import {
+  signedWorkflowSchema,
+  verifyWorkflowApproval,
+  type ApprovalScope,
+} from "./signed-workflow";
 
 config({
   path: join(process.cwd(), "demo/.env"),
@@ -130,8 +134,10 @@ export async function evaluateApprovedWorkflow(requestId: string) {
   assert.strictEqual(state.programId, PROGRAM_ID);
   assert.strictEqual(state.owner, OWNER_ID);
 
-  const signedApproval = JSON.parse(
-    readFileSync(join(RUNTIME_DIR, "approvals", `${requestId}.json`), "utf8")
+  const signedApproval = signedWorkflowSchema.parse(
+    JSON.parse(
+      readFileSync(join(RUNTIME_DIR, "approvals", `${requestId}.json`), "utf8")
+    )
   );
 
   const connection = new Connection(RPC_URL, "confirmed");
@@ -440,6 +446,7 @@ Rules:
     program,
     state,
     workflow,
+    signedApproval,
     vaultPda,
     mint,
     treasury,

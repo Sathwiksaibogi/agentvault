@@ -13,6 +13,7 @@ import {
   signedWorkflowSchema,
   verifyWorkflowApproval,
   type ApprovalScope,
+  type SignedWorkflow,
 } from "./signed-workflow";
 
 export type RequestJournalRecord = {
@@ -30,6 +31,26 @@ export type RequestJournalRecord = {
   claimedAt: string;
 };
 
+export function computeApprovalDigest(signed: SignedWorkflow): string {
+  return createHash("sha256")
+    .update(encodeWorkflow(signed.workflow))
+    .update(Buffer.from(signed.signature, "base64"))
+    .digest("hex");
+}
+
+export function assertApprovalDigestMatchesJournal(
+  signed: SignedWorkflow,
+  expectedDigest: string
+): void {
+  const actualDigest = computeApprovalDigest(signed);
+
+  if (actualDigest !== expectedDigest) {
+    throw new Error(
+      "Approval digest mismatch: signed approval differs from journal"
+    );
+  }
+}
+
 export function claimApprovedWorkflow(
   runtimeDir: string,
   signedInput: unknown,
@@ -45,10 +66,7 @@ export function claimApprovedWorkflow(
   const signed = signedWorkflowSchema.parse(signedInput);
 
   // Bind the journal entry to this exact signed approval.
-  const approvalDigest = createHash("sha256")
-    .update(encodeWorkflow(workflow))
-    .update(Buffer.from(signed.signature, "base64"))
-    .digest("hex");
+  const approvalDigest = computeApprovalDigest(signed);
 
   const record: RequestJournalRecord = {
     version: 1,

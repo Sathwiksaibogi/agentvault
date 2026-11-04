@@ -96,6 +96,7 @@ async function main() {
     program,
     state,
     workflow,
+    signedApproval,
     vaultPda,
     mint,
     treasury,
@@ -157,10 +158,6 @@ async function main() {
   );
 
   // 3. Reverify the approval using Solana chain time.
-  const signedApproval = JSON.parse(
-    readFileSync(join(RUNTIME_DIR, "approvals", `${requestId}.json`), "utf8")
-  );
-
   const genesisHash = await connection.getGenesisHash();
 
   assert.strictEqual(genesisHash, state.genesisHash);
