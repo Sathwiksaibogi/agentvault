@@ -5,6 +5,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { verifySavedPaymentIntegrity } from "./saved-payment-integrity";
 import { Connection, PublicKey } from "@solana/web3.js";
 
 import { getAccount, getMint, TOKEN_PROGRAM_ID } from "@solana/spl-token";
@@ -24,7 +25,7 @@ import {
   type ApprovalScope,
 } from "./signed-workflow";
 
-import { loadPreparedPayment } from "./prepared-payment";
+
 
 import { classifyPayment } from "./payment-recovery-state";
 type DemoState = {
@@ -345,39 +346,40 @@ async function getWorkflowData(requestId: string) {
   } | null = null;
 
   if (signedTransactionExists) {
-    // This verifies the journal binding, serialized
-    // transaction digest, and Solana signature.
-    const prepared = loadPreparedPayment(RUNTIME_DIR, requestId);
+  const verified = await verifySavedPaymentIntegrity(
+    RUNTIME_DIR,
+    requestId,
+    {
+      network: NETWORK,
+      genesisHash: state.genesisHash,
+      programId: state.programId,
+      vault: state.vault,
+      owner: state.owner,
+      mint: state.mint,
+      treasury: state.treasury,
+    },
+    program
+  );
 
-    const { record, transaction } = prepared;
+  const [response, blockHeight] = await Promise.all([
+    connection.getSignatureStatuses(
+      [verified.signature],
+      { searchTransactionHistory: true }
+    ),
+    connection.getBlockHeight("confirmed"),
+  ]);
 
-    assert.equal(record.network, NETWORK);
-    assert.equal(record.agentAuthority, workflow.agentAuthority);
-    assert.equal(record.agent, workflow.assignedAgent);
-    assert.equal(record.amountBaseUnits, workflow.amountBaseUnits);
-
-    assert.ok(transaction.signature);
-
-    const signature = bs58.encode(transaction.signature);
-
-    const [response, blockHeight] = await Promise.all([
-      connection.getSignatureStatuses([signature], {
-        searchTransactionHistory: true,
-      }),
-      connection.getBlockHeight("confirmed"),
-    ]);
-
-    payment = {
-      signature,
-      recoveryState: classifyPayment(
-        response.value[0],
-        blockHeight,
-        record.lastValidBlockHeight
-      ),
-      amountBaseUnits: record.amountBaseUnits,
-      nonce: record.nonce,
-    };
-  }
+  payment = {
+    signature: verified.signature,
+    recoveryState: classifyPayment(
+      response.value[0],
+      blockHeight,
+      verified.lastValidBlockHeight
+    ),
+    amountBaseUnits: verified.amountBaseUnits,
+    nonce: verified.nonce,
+  };
+}
 
   return {
     requestId,
