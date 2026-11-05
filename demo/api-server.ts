@@ -25,13 +25,8 @@ import {
   type ApprovalScope,
 } from "./signed-workflow";
 
-import {
-  authenticateApiRequest,
-  isApiRouteAllowed,
-  loadApiCredentials,
-  requiresApiAuthentication,
-  isVaultAccessAllowed
-} from "./api-auth";
+import { loadApiCredentials } from "./api-auth";
+import { authorizeApiRequest } from "./api-request-guard";
 
 import { classifyPayment } from "./payment-recovery-state";
 type DemoState = {
@@ -465,48 +460,23 @@ async function getActivityData() {
 }
 
 const server = createServer(async (request, response) => {
-  if (request.method !== "GET") {
-    sendJson(response, 405, {
-      error: "Method not allowed",
-    });
-    return;
-  }
+  const pathname = new URL(
+    request.url ?? "/",
+    `http://${HOST}:${PORT}`
+  ).pathname;
 
-  const pathname = new URL(request.url ?? "/", `http://${HOST}:${PORT}`)
-    .pathname;
-
- if (requiresApiAuthentication(pathname)) {
-  const role = authenticateApiRequest(
-    request.headers,
-    API_CREDENTIALS,
-    request.rawHeaders
-  );
-
-  if (!role) {
-    sendJson(response, 401, {
-      error: "Unauthorized",
-    });
-    return;
-  }
-
-  if (!isApiRouteAllowed(role, pathname)) {
-    sendJson(response, 403, {
-      error: "Forbidden",
-    });
-    return;
-  }
-  if (
-  !isVaultAccessAllowed(
-    role,
+  const authorization = authorizeApiRequest(
+    request,
+    pathname,
     API_CREDENTIALS,
     state.vault
-  )
-) {
-  sendJson(response, 403, {
-    error: "Forbidden",
+  );
+
+  if (authorization.allowed === false) {
+  sendJson(response, authorization.status, {
+    error: authorization.error,
   });
   return;
-}
 }
 
   if (pathname === "/health") {
