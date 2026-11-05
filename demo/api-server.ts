@@ -30,6 +30,7 @@ import {
   isApiRouteAllowed,
   loadApiCredentials,
   requiresApiAuthentication,
+  isVaultAccessAllowed
 } from "./api-auth";
 
 import { classifyPayment } from "./payment-recovery-state";
@@ -494,6 +495,18 @@ const server = createServer(async (request, response) => {
     });
     return;
   }
+  if (
+  !isVaultAccessAllowed(
+    role,
+    API_CREDENTIALS,
+    state.vault
+  )
+) {
+  sendJson(response, 403, {
+    error: "Forbidden",
+  });
+  return;
+}
 }
 
   if (pathname === "/health") {

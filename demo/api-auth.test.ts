@@ -7,12 +7,14 @@ import {
   loadApiCredentials,
   requireApiToken,
   requiresApiAuthentication,
+  isVaultAccessAllowed,
   type ApiCredentials,
 } from "./api-auth";
 
 const credentials: ApiCredentials = {
   ownerToken: "a".repeat(64),
   developerToken: "b".repeat(64),
+  developerVault: "11111111111111111111111111111111",
 };
 
 function headers(token: string) {
@@ -26,6 +28,7 @@ test("validates both configured credentials", () => {
     loadApiCredentials({
       AGENTVAULT_OWNER_API_TOKEN: credentials.ownerToken,
       AGENTVAULT_DEVELOPER_API_TOKEN: credentials.developerToken,
+      AGENTVAULT_DEVELOPER_VAULT: credentials.developerVault,
     }),
     credentials
   );
@@ -158,4 +161,66 @@ test("health remains outside API authentication", () => {
   assert.equal(requiresApiAuthentication("/health"), false);
   assert.equal(requiresApiAuthentication("/api/activity"), true);
   assert.equal(requiresApiAuthentication("/api/treasury"), true);
+});
+
+test("developer can access only their assigned vault", () => {
+  assert.equal(
+    isVaultAccessAllowed(
+      "developer",
+      credentials,
+      credentials.developerVault
+    ),
+    true
+  );
+
+  assert.equal(
+    isVaultAccessAllowed(
+      "developer",
+      credentials,
+      "SysvarC1ock11111111111111111111111111111111"
+    ),
+    false
+  );
+});
+
+test("owner retains access to the current runtime vault", () => {
+  assert.equal(
+    isVaultAccessAllowed(
+      "owner",
+      credentials,
+      credentials.developerVault
+    ),
+    true
+  );
+});
+
+test("missing developer vault configuration fails closed", () => {
+  assert.throws(() =>
+    loadApiCredentials({
+      AGENTVAULT_OWNER_API_TOKEN: credentials.ownerToken,
+      AGENTVAULT_DEVELOPER_API_TOKEN: credentials.developerToken,
+    })
+  );
+});
+
+test("invalid developer vault configuration fails closed", () => {
+  assert.throws(() =>
+    loadApiCredentials({
+      AGENTVAULT_OWNER_API_TOKEN: credentials.ownerToken,
+      AGENTVAULT_DEVELOPER_API_TOKEN: credentials.developerToken,
+      AGENTVAULT_DEVELOPER_VAULT: "invalid-vault",
+    })
+  );
+});
+
+test("developer cannot bypass owner-only endpoint permissions", () => {
+  assert.equal(
+    isApiRouteAllowed("developer", "/api/treasury"),
+    false
+  );
+
+  assert.equal(
+    isApiRouteAllowed("developer", "/api/workflows"),
+    false
+  );
 });

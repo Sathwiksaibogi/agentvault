@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
+import { PublicKey } from "@solana/web3.js";
 
 const TOKEN_MIN_LENGTH = 32;
 
@@ -8,6 +9,7 @@ export type ApiRole = "owner" | "developer";
 export type ApiCredentials = {
   ownerToken: string;
   developerToken: string;
+  developerVault: string;
 };
 
 export function requireApiToken(
@@ -44,7 +46,36 @@ export function loadApiCredentials(
     throw new Error("Owner and developer API tokens must be different");
   }
 
-  return { ownerToken, developerToken };
+  const developerVaultInput =
+  env.AGENTVAULT_DEVELOPER_VAULT;
+
+if (!developerVaultInput) {
+  throw new Error(
+    "AGENTVAULT_DEVELOPER_VAULT must be configured"
+  );
+}
+
+let developerVault: string;
+
+try {
+  const publicKey = new PublicKey(developerVaultInput);
+
+  developerVault = publicKey.toBase58();
+
+  if (developerVault !== developerVaultInput) {
+    throw new Error("Non-canonical vault address");
+  }
+} catch {
+  throw new Error(
+    "AGENTVAULT_DEVELOPER_VAULT must be a valid canonical Solana public key"
+  );
+}
+
+  return {
+  ownerToken,
+  developerToken,
+  developerVault,
+};
 }
 
 function matchesToken(
@@ -131,6 +162,22 @@ export function isApiRouteAllowed(
 
   if (role === "developer") {
     return pathname === "/api/activity";
+  }
+
+  return false;
+}
+
+export function isVaultAccessAllowed(
+  role: ApiRole,
+  credentials: ApiCredentials,
+  runtimeVault: string
+): boolean {
+  if (role === "owner") {
+    return true;
+  }
+
+  if (role === "developer") {
+    return credentials.developerVault === runtimeVault;
   }
 
   return false;
