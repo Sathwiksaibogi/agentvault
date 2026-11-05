@@ -125,12 +125,26 @@ export function createApiHandler(
     }
 
     if (pathname === "/api/workflows") {
-      sendJson(response, 200, {
-        network,
-        requestIds: readers.getWorkflowIds(),
-      });
-      return;
-    }
+  try {
+    const requestIds = readers.getWorkflowIds();
+
+    sendJson(response, 200, {
+      network,
+      requestIds,
+    });
+  } catch (error) {
+    console.error(
+      "Workflow list failed:",
+      error instanceof Error ? error.message : error
+    );
+
+    sendJson(response, 503, {
+      error: "Workflow list temporarily unavailable",
+    });
+  }
+
+  return;
+}
 
     const workflowMatch = pathname.match(
       /^\/api\/workflows\/([a-zA-Z0-9_-]{8,64})$/

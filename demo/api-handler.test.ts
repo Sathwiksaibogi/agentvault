@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { once } from "node:events";
 
 import { createApiHandler, type ApiDataReaders } from "./api-handler";
@@ -254,6 +254,168 @@ test("non-GET requests never invoke readers", async () => {
     });
 
     assert.equal(response.status, 405);
+    assert.deepEqual(calls, []);
+  });
+});
+
+test("workflow list failures return sanitized 503", async () => {
+  const calls: string[] = [];
+
+  const server = createServer(
+    createApiHandler({
+      network: "devnet",
+      runtimeVault: VAULT_A,
+      credentials,
+
+      readers: {
+        getTreasuryData: async () => {
+          calls.push("treasury");
+          return {};
+        },
+        getAgentsData: async () => {
+          calls.push("agents");
+          return {};
+        },
+        getWorkflowIds: () => {
+          calls.push("workflowIds");
+          throw new Error("Sensitive filesystem failure");
+        },
+        getWorkflowData: async () => null,
+        getActivityData: async () => ({}),
+      },
+
+      cachedRead: async <T>(
+        _key: string,
+        loader: () => Promise<T>
+      ): Promise<T> => loader(),
+    })
+  );
+
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/workflows`,
+      {
+        headers: auth(credentials.ownerToken),
+      }
+    );
+
+    assert.equal(response.status, 503);
+
+    const body = await response.text();
+
+    assert.deepEqual(JSON.parse(body), {
+      error: "Workflow list temporarily unavailable",
+    });
+
+    assert.ok(!body.includes("Sensitive filesystem failure"));
+    assert.deepEqual(calls, ["workflowIds"]);
+  } finally {
+    server.closeAllConnections();
+
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) =>
+        error ? reject(error) : resolve()
+      );
+    });
+  }
+});
+
+test("malformed workflow IDs never reach data readers", async () => {
+  await withApi(async (url, calls) => {
+    const headers = auth(credentials.ownerToken);
+
+    for (const path of [
+      "/api/workflows/short",
+      "/api/workflows/invalid.id",
+      `/api/workflows/${"a".repeat(65)}`,
+      "/api/workflows/invalid%2Fid",
+    ]) {
+      const response = await fetch(`${url}${path}`, { headers });
+
+      assert.notEqual(response.status, 200);
+    }
+
+    assert.deepEqual(calls, []);
+  });
+});
+
+test("unauthenticated malformed API routes never reach readers", async () => {
+  await withApi(async (url, calls) => {
+    const response = await fetch(
+      `${url}/api/workflows/invalid.id`
+    );
+
+    assert.equal(response.status, 401);
+    assert.deepEqual(calls, []);
+  });
+});
+
+test("duplicate Authorization headers are rejected by actual handler", async () => {
+  await withApi(async (url, calls) => {
+    const response = await new Promise<{
+      status: number | undefined;
+      body: string;
+    }>((resolve, reject) => {
+      const request = httpRequest(
+        `${url}/api/treasury`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: [
+              `Bearer ${credentials.ownerToken}`,
+              `Bearer ${credentials.developerToken}`,
+            ],
+          },
+        },
+        (res) => {
+          let body = "";
+
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => {
+            body += chunk;
+          });
+
+          res.on("end", () => {
+            resolve({
+              status: res.statusCode,
+              body,
+            });
+          });
+
+          res.on("error", reject);
+        }
+      );
+
+      request.on("error", reject);
+      request.end();
+    });
+
+    assert.equal(response.status, 401);
+    assert.deepEqual(JSON.parse(response.body), {
+      error: "Unauthorized",
+    });
+
+    assert.deepEqual(calls, []);
+  });
+});
+
+test("unsupported HTTP methods never reach readers", async () => {
+  await withApi(async (url, calls) => {
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      const response = await fetch(`${url}/api/treasury`, {
+        method,
+        headers: auth(credentials.ownerToken),
+      });
+
+      assert.equal(response.status, 405);
+    }
+
     assert.deepEqual(calls, []);
   });
 });
