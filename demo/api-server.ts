@@ -1,7 +1,8 @@
 import * as anchor from "@anchor-lang/core";
 import BN from "bn.js";
 import { strict as assert } from "node:assert";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer } from "node:http";
+import { createApiHandler } from "./api-handler";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -26,7 +27,7 @@ import {
 } from "./signed-workflow";
 
 import { loadApiCredentials } from "./api-auth";
-import { authorizeApiRequest } from "./api-request-guard";
+
 
 import { classifyPayment } from "./payment-recovery-state";
 type DemoState = {
@@ -77,14 +78,7 @@ const program = new anchor.Program<Agentvault>(idl, {
 
 assert.equal(program.programId.toBase58(), state.programId);
 
-function sendJson(response: ServerResponse, status: number, data: unknown) {
-  response.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
 
-  response.end(JSON.stringify(data));
-}
 
 type CacheEntry = {
   value: unknown;
@@ -459,142 +453,23 @@ async function getActivityData() {
   };
 }
 
-const server = createServer(async (request, response) => {
-  const pathname = new URL(
-    request.url ?? "/",
-    `http://${HOST}:${PORT}`
-  ).pathname;
+const server = createServer(
+  createApiHandler({
+    network: NETWORK,
+    runtimeVault: state.vault,
+    credentials: API_CREDENTIALS,
 
-  const authorization = authorizeApiRequest(
-    request,
-    pathname,
-    API_CREDENTIALS,
-    state.vault
-  );
+    readers: {
+      getTreasuryData,
+      getAgentsData,
+      getWorkflowIds,
+      getWorkflowData,
+      getActivityData,
+    },
 
-  if (authorization.allowed === false) {
-  sendJson(response, authorization.status, {
-    error: authorization.error,
-  });
-  return;
-}
-
-  if (pathname === "/health") {
-    sendJson(response, 200, {
-      service: "agentvault-api",
-      network: NETWORK,
-      mode: "read-only",
-      status: "running",
-    });
-    return;
-  }
-
-  if (pathname === "/api/treasury") {
-    try {
-      const result = await cachedRead("treasury", getTreasuryData, 30_000);
-      sendJson(response, 200, result);
-    } catch (error) {
-      console.error(
-        "Treasury read failed:",
-        error instanceof Error ? error.message : error
-      );
-
-      sendJson(response, 503, {
-        error: "Treasury data temporarily unavailable",
-      });
-    }
-
-    return;
-  }
-
-  if (pathname === "/api/agents") {
-    try {
-      const result = await cachedRead("agents", getAgentsData, 30_000);
-
-      sendJson(response, 200, result);
-    } catch (error) {
-      console.error(
-        "Agent read failed:",
-        error instanceof Error ? error.message : error
-      );
-
-      sendJson(response, 503, {
-        error: "Agent data temporarily unavailable",
-      });
-    }
-
-    return;
-  }
-
-  if (pathname === "/api/workflows") {
-    sendJson(response, 200, {
-      network: NETWORK,
-      requestIds: getWorkflowIds(),
-    });
-
-    return;
-  }
-
-  const workflowMatch = pathname.match(
-    /^\/api\/workflows\/([a-zA-Z0-9_-]{8,64})$/
-  );
-
-  if (workflowMatch) {
-    try {
-      const requestId = workflowMatch[1];
-
-      const result = await cachedRead(
-        `workflow:${requestId}`,
-        () => getWorkflowData(requestId),
-        15_000
-      );
-
-      if (result === null) {
-        sendJson(response, 404, {
-          error: "Workflow not found",
-        });
-
-        return;
-      }
-
-      sendJson(response, 200, result);
-    } catch (error) {
-      console.error(
-        "Workflow status failed:",
-        error instanceof Error ? error.message : error
-      );
-
-      sendJson(response, 503, {
-        error: "Workflow status temporarily unavailable",
-      });
-    }
-
-    return;
-  }
-
-  if (pathname === "/api/activity") {
-    try {
-      const result = await cachedRead("activity", getActivityData, 60_000);
-
-      sendJson(response, 200, result);
-    } catch (error) {
-      console.error(
-        "Activity read failed:",
-        error instanceof Error ? error.message : error
-      );
-
-      sendJson(response, 503, {
-        error: "Activity data temporarily unavailable",
-      });
-    }
-
-    return;
-  }
-
-  sendJson(response, 404, {
-    error: "Endpoint not found",
-  });
-});
+    cachedRead,
+  })
+);
 
 server.listen(PORT, HOST, () => {
   console.log("\n=== AGENTVAULT BACKEND API ===");
