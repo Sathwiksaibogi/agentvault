@@ -2,11 +2,15 @@ import type { IncomingMessage } from "node:http";
 
 import {
   authenticateApiRequest,
-  isApiRouteAllowed,
-  isVaultAccessAllowed,
   requiresApiAuthentication,
   type ApiCredentials,
 } from "./api-auth";
+
+import {
+  createLegacyPrincipal,
+  hasVaultAccess,
+  isPrincipalRouteAllowed,
+} from "./api-principal";
 
 export type ApiGuardResult =
   | { allowed: true }
@@ -48,16 +52,22 @@ export function authorizeApiRequest(
     };
   }
 
-  if (
-    !isApiRouteAllowed(role, pathname) ||
-    !isVaultAccessAllowed(role, credentials, runtimeVault)
-  ) {
-    return {
-      allowed: false,
-      status: 403,
-      error: "Forbidden",
-    };
-  }
+  const principal = createLegacyPrincipal(
+  role,
+  runtimeVault,
+  credentials.developerVault
+);
+
+if (
+  !isPrincipalRouteAllowed(principal, pathname) ||
+  !hasVaultAccess(principal, runtimeVault)
+) {
+  return {
+    allowed: false,
+    status: 403,
+    error: "Forbidden",
+  };
+}
 
   return { allowed: true };
 }
