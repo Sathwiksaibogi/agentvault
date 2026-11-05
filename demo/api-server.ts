@@ -25,7 +25,11 @@ import {
   type ApprovalScope,
 } from "./signed-workflow";
 
-
+import {
+  isAuthorizedApiRequest,
+  requireApiToken,
+  requiresApiAuthentication,
+} from "./api-auth";
 
 import { classifyPayment } from "./payment-recovery-state";
 type DemoState = {
@@ -40,6 +44,10 @@ type DemoState = {
 
 const PORT = 8787;
 const HOST = "127.0.0.1";
+
+const API_TOKEN = requireApiToken(
+  process.env.AGENTVAULT_API_TOKEN
+);
 
 const DEMO_AGENTS = [
   {
@@ -466,6 +474,17 @@ const server = createServer(async (request, response) => {
 
   const pathname = new URL(request.url ?? "/", `http://${HOST}:${PORT}`)
     .pathname;
+
+  if (
+  requiresApiAuthentication(pathname) &&
+  !isAuthorizedApiRequest(request.headers, API_TOKEN)
+) {
+  sendJson(response, 401, {
+    error: "Unauthorized",
+  });
+
+  return;
+}
 
   if (pathname === "/health") {
     sendJson(response, 200, {
