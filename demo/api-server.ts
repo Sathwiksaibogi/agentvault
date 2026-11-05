@@ -26,8 +26,9 @@ import {
 } from "./signed-workflow";
 
 import {
-  isAuthorizedApiRequest,
-  requireApiToken,
+  authenticateApiRequest,
+  isApiRouteAllowed,
+  loadApiCredentials,
   requiresApiAuthentication,
 } from "./api-auth";
 
@@ -45,9 +46,7 @@ type DemoState = {
 const PORT = 8787;
 const HOST = "127.0.0.1";
 
-const API_TOKEN = requireApiToken(
-  process.env.AGENTVAULT_API_TOKEN
-);
+const API_CREDENTIALS = loadApiCredentials(process.env);
 
 const DEMO_AGENTS = [
   {
@@ -475,15 +474,26 @@ const server = createServer(async (request, response) => {
   const pathname = new URL(request.url ?? "/", `http://${HOST}:${PORT}`)
     .pathname;
 
-  if (
-  requiresApiAuthentication(pathname) &&
-  !isAuthorizedApiRequest(request.headers, API_TOKEN)
-) {
-  sendJson(response, 401, {
-    error: "Unauthorized",
-  });
+ if (requiresApiAuthentication(pathname)) {
+  const role = authenticateApiRequest(
+    request.headers,
+    API_CREDENTIALS,
+    request.rawHeaders
+  );
 
-  return;
+  if (!role) {
+    sendJson(response, 401, {
+      error: "Unauthorized",
+    });
+    return;
+  }
+
+  if (!isApiRouteAllowed(role, pathname)) {
+    sendJson(response, 403, {
+      error: "Forbidden",
+    });
+    return;
+  }
 }
 
   if (pathname === "/health") {

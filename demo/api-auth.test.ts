@@ -2,94 +2,160 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  isAuthorizedApiRequest,
+  authenticateApiRequest,
+  isApiRouteAllowed,
+  loadApiCredentials,
   requireApiToken,
   requiresApiAuthentication,
+  type ApiCredentials,
 } from "./api-auth";
 
-const token = "a".repeat(64);
+const credentials: ApiCredentials = {
+  ownerToken: "a".repeat(64),
+  developerToken: "b".repeat(64),
+};
 
-test("accepts a valid configured token", () => {
-  assert.equal(requireApiToken(token), token);
-});
+function headers(token: string) {
+  return { authorization: `Bearer ${token}` };
+}
 
-test("rejects missing or weak token configuration", () => {
-  assert.throws(() => requireApiToken(undefined));
-  assert.throws(() => requireApiToken(""));
-  assert.throws(() => requireApiToken("short"));
-  assert.throws(() => requireApiToken(` ${token}`));
-});
+test("validates both configured credentials", () => {
+  assert.equal(requireApiToken(credentials.ownerToken), credentials.ownerToken);
 
-test("accepts the correct bearer token", () => {
-  assert.equal(
-    isAuthorizedApiRequest(
-      { authorization: `Bearer ${token}` },
-      token
-    ),
-    true
+  assert.deepEqual(
+    loadApiCredentials({
+      AGENTVAULT_OWNER_API_TOKEN: credentials.ownerToken,
+      AGENTVAULT_DEVELOPER_API_TOKEN: credentials.developerToken,
+    }),
+    credentials
   );
 });
 
-test("rejects requests without authorization", () => {
-  assert.equal(isAuthorizedApiRequest({}, token), false);
-});
+test("fails closed when credentials are missing or weak", () => {
+  assert.throws(() => loadApiCredentials({}));
 
-test("rejects an incorrect token", () => {
-  assert.equal(
-    isAuthorizedApiRequest(
-      { authorization: `Bearer ${"b".repeat(64)}` },
-      token
-    ),
-    false
+  assert.throws(() =>
+    loadApiCredentials({
+      AGENTVAULT_OWNER_API_TOKEN: "short",
+      AGENTVAULT_DEVELOPER_API_TOKEN: credentials.developerToken,
+    })
+  );
+
+  assert.throws(() =>
+    loadApiCredentials({
+      AGENTVAULT_OWNER_API_TOKEN: credentials.ownerToken,
+    })
   );
 });
 
-test("rejects malformed authorization headers", () => {
+test("rejects identical owner and developer credentials", () => {
+  assert.throws(() =>
+    loadApiCredentials({
+      AGENTVAULT_OWNER_API_TOKEN: credentials.ownerToken,
+      AGENTVAULT_DEVELOPER_API_TOKEN: credentials.ownerToken,
+    })
+  );
+});
+
+test("identifies the owner role", () => {
+  assert.equal(
+    authenticateApiRequest(
+      headers(credentials.ownerToken),
+      credentials
+    ),
+    "owner"
+  );
+});
+
+test("identifies the developer role", () => {
+  assert.equal(
+    authenticateApiRequest(
+      headers(credentials.developerToken),
+      credentials
+    ),
+    "developer"
+  );
+});
+
+test("rejects missing, invalid and malformed authorization", () => {
+  assert.equal(authenticateApiRequest({}, credentials), null);
+
   for (const authorization of [
-    token,
-    `Basic ${token}`,
-    `bearer ${token}`,
-    `Bearer  ${token}`,
-    `Bearer ${token} extra`,
-    "Bearer ",
+    "Bearer " + "c".repeat(64),
+    "Basic " + credentials.ownerToken,
+    "bearer " + credentials.ownerToken,
+    "Bearer  " + credentials.ownerToken,
+    "Bearer " + credentials.ownerToken + " extra",
   ]) {
     assert.equal(
-      isAuthorizedApiRequest({ authorization }, token),
-      false
+      authenticateApiRequest({ authorization }, credentials),
+      null
     );
   }
 });
 
-test("rejects non-string authorization headers", () => {
+test("rejects duplicate Authorization headers", () => {
   assert.equal(
-    isAuthorizedApiRequest(
-      {
-        authorization: [token, token],
-      } as unknown as import("node:http").IncomingHttpHeaders,
-      token
+    authenticateApiRequest(
+      headers(credentials.ownerToken),
+      credentials,
+      [
+        "Authorization",
+        `Bearer ${credentials.ownerToken}`,
+        "authorization",
+        `Bearer ${credentials.developerToken}`,
+      ]
     ),
-    false
+    null
   );
 });
 
-test("protects all API paths but not health", () => {
-  assert.equal(requiresApiAuthentication("/health"), false);
-  assert.equal(requiresApiAuthentication("/"), false);
+test("rejects malformed authorization header values", () => {
+  assert.equal(
+    authenticateApiRequest(
+      {
+        authorization: [credentials.ownerToken],
+      } as unknown as import("node:http").IncomingHttpHeaders,
+      credentials
+    ),
+    null
+  );
+});
 
-  for (const pathname of [
-    "/api",
+test("owner can access known protected endpoints", () => {
+  for (const path of [
     "/api/treasury",
     "/api/agents",
     "/api/workflows",
     "/api/workflows/request-123",
     "/api/activity",
-    "/api/future-endpoint",
   ]) {
-    assert.equal(requiresApiAuthentication(pathname), true);
+    assert.equal(isApiRouteAllowed("owner", path), true);
   }
+});
 
-  assert.equal(
-    requiresApiAuthentication("/api-public"),
-    false
-  );
+test("developer has only explicitly permitted access", () => {
+  assert.equal(isApiRouteAllowed("developer", "/api/activity"), true);
+
+  for (const path of [
+    "/api/treasury",
+    "/api/agents",
+    "/api/workflows",
+    "/api/workflows/request-123",
+  ]) {
+    assert.equal(isApiRouteAllowed("developer", path), false);
+  }
+});
+
+test("unknown routes are denied by default", () => {
+  for (const role of ["owner", "developer"] as const) {
+    assert.equal(isApiRouteAllowed(role, "/api/future-endpoint"), false);
+    assert.equal(isApiRouteAllowed(role, "/api"), false);
+  }
+});
+
+test("health remains outside API authentication", () => {
+  assert.equal(requiresApiAuthentication("/health"), false);
+  assert.equal(requiresApiAuthentication("/api/activity"), true);
+  assert.equal(requiresApiAuthentication("/api/treasury"), true);
 });
