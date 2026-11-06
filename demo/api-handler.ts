@@ -5,7 +5,13 @@ import type {
 } from "node:http";
 
 import type { ApiCredentials } from "./api-auth";
-import { authorizeApiRequest } from "./api-request-guard";
+import {
+  authorizeApiRequestAsync,
+} from "./api-async-guard";
+
+import type {
+  DeveloperApiKeyLookup,
+} from "./api-key-resolver";
 
 export type ApiDataReaders = {
   getTreasuryData: () => Promise<unknown>;
@@ -20,6 +26,10 @@ export type ApiHandlerConfig = {
   runtimeVault: string;
   credentials: ApiCredentials;
   readers: ApiDataReaders;
+
+  lookupDeveloperKey?: DeveloperApiKeyLookup;
+  now?: () => number;
+
   cachedRead: <T>(
     key: string,
     loader: () => Promise<T>,
@@ -44,12 +54,14 @@ export function createApiHandler(
   config: ApiHandlerConfig
 ): RequestListener {
   const {
-    network,
-    runtimeVault,
-    credentials,
-    readers,
-    cachedRead,
-  } = config;
+  network,
+  runtimeVault,
+  credentials,
+  readers,
+  cachedRead,
+  lookupDeveloperKey,
+  now,
+} = config;
 
   return async (
     request: IncomingMessage,
@@ -60,12 +72,16 @@ export function createApiHandler(
       "http://127.0.0.1"
     ).pathname;
 
-    const authorization = authorizeApiRequest(
-      request,
-      pathname,
-      credentials,
-      runtimeVault
-    );
+    const authorization = await authorizeApiRequestAsync(
+  request,
+  pathname,
+  {
+    credentials,
+    runtimeVault,
+    lookupDeveloperKey,
+    now,
+  }
+);
 
     if (authorization.allowed === false) {
       sendJson(response, authorization.status, {
