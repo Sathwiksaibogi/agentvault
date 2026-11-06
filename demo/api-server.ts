@@ -6,6 +6,8 @@ import { createApiHandler } from "./api-handler";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { createApiDatabase, verifyApiDatabase } from "./api-database";
+
 import { verifySavedPaymentIntegrity } from "./saved-payment-integrity";
 import { Connection, PublicKey } from "@solana/web3.js";
 
@@ -27,7 +29,6 @@ import {
 } from "./signed-workflow";
 
 import { loadApiCredentials } from "./api-auth";
-
 
 import { classifyPayment } from "./payment-recovery-state";
 type DemoState = {
@@ -77,8 +78,6 @@ const program = new anchor.Program<Agentvault>(idl, {
 });
 
 assert.equal(program.programId.toBase58(), state.programId);
-
-
 
 type CacheEntry = {
   value: unknown;
@@ -343,40 +342,39 @@ async function getWorkflowData(requestId: string) {
   } | null = null;
 
   if (signedTransactionExists) {
-  const verified = await verifySavedPaymentIntegrity(
-    RUNTIME_DIR,
-    requestId,
-    {
-      network: NETWORK,
-      genesisHash: state.genesisHash,
-      programId: state.programId,
-      vault: state.vault,
-      owner: state.owner,
-      mint: state.mint,
-      treasury: state.treasury,
-    },
-    program
-  );
+    const verified = await verifySavedPaymentIntegrity(
+      RUNTIME_DIR,
+      requestId,
+      {
+        network: NETWORK,
+        genesisHash: state.genesisHash,
+        programId: state.programId,
+        vault: state.vault,
+        owner: state.owner,
+        mint: state.mint,
+        treasury: state.treasury,
+      },
+      program
+    );
 
-  const [response, blockHeight] = await Promise.all([
-    connection.getSignatureStatuses(
-      [verified.signature],
-      { searchTransactionHistory: true }
-    ),
-    connection.getBlockHeight("confirmed"),
-  ]);
+    const [response, blockHeight] = await Promise.all([
+      connection.getSignatureStatuses([verified.signature], {
+        searchTransactionHistory: true,
+      }),
+      connection.getBlockHeight("confirmed"),
+    ]);
 
-  payment = {
-    signature: verified.signature,
-    recoveryState: classifyPayment(
-      response.value[0],
-      blockHeight,
-      verified.lastValidBlockHeight
-    ),
-    amountBaseUnits: verified.amountBaseUnits,
-    nonce: verified.nonce,
-  };
-}
+    payment = {
+      signature: verified.signature,
+      recoveryState: classifyPayment(
+        response.value[0],
+        blockHeight,
+        verified.lastValidBlockHeight
+      ),
+      amountBaseUnits: verified.amountBaseUnits,
+      nonce: verified.nonce,
+    };
+  }
 
   return {
     requestId,
@@ -453,29 +451,99 @@ async function getActivityData() {
   };
 }
 
-const server = createServer(
-  createApiHandler({
-    network: NETWORK,
-    runtimeVault: state.vault,
-    credentials: API_CREDENTIALS,
+async function main(): Promise<void> {
+  const database = createApiDatabase(process.env);
 
-    readers: {
-      getTreasuryData,
-      getAgentsData,
-      getWorkflowIds,
-      getWorkflowData,
-      getActivityData,
-    },
+  try {
+    // Do not accept requests until PostgreSQL is reachable.
+    await verifyApiDatabase(database);
 
-    cachedRead,
-  })
-);
+    const server = createServer(
+      createApiHandler({
+        network: NETWORK,
+        runtimeVault: state.vault,
+        credentials: API_CREDENTIALS,
 
-server.listen(PORT, HOST, () => {
-  console.log("\n=== AGENTVAULT BACKEND API ===");
-  console.log("Network:", NETWORK);
-  console.log("Mode: READ ONLY");
-  console.log(`Health: http://${HOST}:${PORT}/health`);
-  console.log(`Treasury: http://${HOST}:${PORT}/api/treasury`);
-  console.log("No signing or Gemini endpoints exposed.");
+        lookupDeveloperKey: (keyId) => database.repository.findById(keyId),
+
+        readers: {
+          getTreasuryData,
+          getAgentsData,
+          getWorkflowIds,
+          getWorkflowData,
+          getActivityData,
+        },
+
+        cachedRead,
+      })
+    );
+
+    let shuttingDown = false;
+
+    const shutdown = (signal: string): void => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+
+      console.log(`Received ${signal}; shutting down API`);
+
+      void (async () => {
+        try {
+          await new Promise<void>((resolve, reject) => {
+            server.close((error) => {
+              if (error) {
+                reject(error);
+              } else {
+                resolve();
+              }
+            });
+
+            server.closeIdleConnections();
+          });
+        } catch (error) {
+          console.error("HTTP shutdown failed:", error);
+          process.exitCode = 1;
+        } finally {
+          try {
+            await database.pool.end();
+          } catch (error) {
+            console.error("PostgreSQL shutdown failed:", error);
+            process.exitCode = 1;
+          }
+        }
+      })();
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+
+      server.listen(PORT, HOST, () => {
+        server.off("error", reject);
+
+        process.once("SIGINT", () => shutdown("SIGINT"));
+        process.once("SIGTERM", () => shutdown("SIGTERM"));
+
+        console.log("\n=== AGENTVAULT BACKEND API ===");
+        console.log("Network:", NETWORK);
+        console.log("Mode: READ ONLY");
+        console.log("PostgreSQL authentication: enabled");
+        console.log(`Health: http://${HOST}:${PORT}/health`);
+        console.log(`Treasury: http://${HOST}:${PORT}/api/treasury`);
+        console.log("No signing or Gemini endpoints exposed.");
+
+        resolve();
+      });
+    });
+  } catch (error) {
+    await database.pool.end();
+    throw error;
+  }
+}
+
+void main().catch((error) => {
+  console.error(
+    "AgentVault API startup failed:",
+    error instanceof Error ? error.message : error
+  );
+
+  process.exitCode = 1;
 });
