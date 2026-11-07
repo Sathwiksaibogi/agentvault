@@ -465,6 +465,7 @@ async function main(): Promise<void> {
         credentials: API_CREDENTIALS,
 
         lookupDeveloperKey: (keyId) => database.repository.findById(keyId),
+        managementRepository: database.repository,
 
         readers: {
           getTreasuryData,
