@@ -7,6 +7,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createBoundedRpcFetch } from "./api-rpc-security";
 import { configureApiHttpServer } from "./api-http-security";
+import { createApiReadCache } from "./api-read-cache";
+import { mapWithConcurrency } from "./api-concurrency";
 
 import { createApiDatabase, verifyApiDatabase } from "./api-database";
 
@@ -85,50 +87,7 @@ const program = new anchor.Program<Agentvault>(idl, {
 
 assert.equal(program.programId.toBase58(), state.programId);
 
-type CacheEntry = {
-  value: unknown;
-  expiresAt: number;
-};
-
-const readCache = new Map<string, CacheEntry>();
-const pendingReads = new Map<string, Promise<unknown>>();
-
-async function cachedRead<T>(
-  key: string,
-  loader: () => Promise<T>,
-  ttlMs = 30_000
-): Promise<T> {
-  const cached = readCache.get(key);
-
-  if (cached && Date.now() < cached.expiresAt) {
-    return cached.value as T;
-  }
-
-  const pending = pendingReads.get(key);
-
-  if (pending) {
-    return pending as Promise<T>;
-  }
-
-  const job = (async () => {
-    try {
-      const value = await loader();
-
-      readCache.set(key, {
-        value,
-        expiresAt: Date.now() + ttlMs,
-      });
-
-      return value;
-    } finally {
-      pendingReads.delete(key);
-    }
-  })();
-
-  pendingReads.set(key, job);
-
-  return job;
-}
+const { cachedRead } = createApiReadCache();
 
 async function getTreasuryData() {
   const vaultPda = new PublicKey(state.vault);
@@ -419,32 +378,29 @@ async function getActivityData() {
   // Reuse our verified on-chain agent reader.
   const { agents } = await cachedRead("agents", getAgentsData, 30_000);
 
-  const pages = await Promise.all(
-    agents.map(async (agent) => {
-      const taskPda = new PublicKey(agent.task.taskPda);
+  const pages = await mapWithConcurrency(agents, 4, async (agent) => {
+    const taskPda = new PublicKey(agent.task.taskPda);
 
-      // Read confirmed transactions referencing this task.
-      const signatures = await connection.getSignaturesForAddress(
-        taskPda,
-        { limit: 12 },
-        "confirmed"
-      );
+    // Read confirmed transactions referencing this task.
+    const signatures = await connection.getSignaturesForAddress(
+      taskPda,
+      { limit: 12 },
+      "confirmed"
+    );
 
-      return signatures.map((entry) => ({
-        signature: entry.signature,
-        slot: entry.slot,
-        blockTimeUnix: entry.blockTime,
-        agentId: agent.id,
-        workflow: agent.workflow,
-        taskId: agent.task.taskId,
-        taskPda: agent.task.taskPda,
-        succeeded: entry.err === null,
-        explorerUrl:
-          `https://explorer.solana.com/tx/` +
-          `${entry.signature}?cluster=devnet`,
-      }));
-    })
-  );
+    return signatures.map((entry) => ({
+      signature: entry.signature,
+      slot: entry.slot,
+      blockTimeUnix: entry.blockTime,
+      agentId: agent.id,
+      workflow: agent.workflow,
+      taskId: agent.task.taskId,
+      taskPda: agent.task.taskPda,
+      succeeded: entry.err === null,
+      explorerUrl:
+        `https://explorer.solana.com/tx/` + `${entry.signature}?cluster=devnet`,
+    }));
+  });
 
   const activity = pages
     .flat()
