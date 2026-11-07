@@ -3,6 +3,7 @@ import type {
   ServerResponse,
   RequestListener,
 } from "node:http";
+import { issueDeveloperApiKey } from "./api-key-issuance";
 
 import { authenticateManagementOwner } from "./api-management-auth";
 
@@ -38,7 +39,10 @@ export type ApiHandlerConfig = {
     ttlMs?: number
   ) => Promise<T>;
 
-  managementRepository?: Pick<DeveloperApiKeyRepository, "listByPrincipal">;
+  managementRepository?: Pick<
+    DeveloperApiKeyRepository,
+    "listByPrincipal" | "create"
+  >;
 };
 
 function sendJson(
@@ -52,6 +56,32 @@ function sendJson(
   });
 
   response.end(JSON.stringify(data));
+}
+
+async function readManagementJsonBody(
+  request: IncomingMessage
+): Promise<unknown> {
+  const MAX_BYTES = 4096;
+  const chunks: Buffer[] = [];
+  let size = 0;
+
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+
+    size += buffer.length;
+
+    if (size > MAX_BYTES) {
+      throw new Error("Invalid request body");
+    }
+
+    chunks.push(buffer);
+  }
+
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new Error("Invalid request body");
+  }
 }
 
 export function createApiHandler(config: ApiHandlerConfig): RequestListener {
@@ -71,7 +101,7 @@ export function createApiHandler(config: ApiHandlerConfig): RequestListener {
 
     if (pathname === "/api/keys") {
       // Explicitly restrict this management route to GET.
-      if (request.method !== "GET") {
+      if (request.method !== "GET" && request.method !== "POST") {
         sendJson(response, 405, {
           error: "Method not allowed",
         });
@@ -97,6 +127,106 @@ export function createApiHandler(config: ApiHandlerConfig): RequestListener {
         sendJson(response, 401, {
           error: "Unauthorized",
         });
+        return;
+      }
+
+      if (request.method === "POST") {
+        if (!managementRepository.create) {
+          sendJson(response, 503, {
+            error: "Credential management unavailable",
+          });
+          return;
+        }
+
+        const contentType = request.headers["content-type"];
+
+        if (
+          typeof contentType !== "string" ||
+          !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(contentType)
+        ) {
+          sendJson(response, 415, {
+            error: "Unsupported media type",
+          });
+          return;
+        }
+
+        let body: unknown;
+
+        try {
+          body = await readManagementJsonBody(request);
+        } catch {
+          sendJson(response, 400, {
+            error: "Invalid request body",
+          });
+          return;
+        }
+
+        if (typeof body !== "object" || body === null || Array.isArray(body)) {
+          sendJson(response, 400, {
+            error: "Invalid request body",
+          });
+          return;
+        }
+
+        const input = body as Record<string, unknown>;
+        const fields = Object.keys(input);
+
+        // Never accept vault, scopes, issuer, or other authority
+        // information from the HTTP request.
+        if (
+          fields.length !== 2 ||
+          !fields.includes("principalId") ||
+          !fields.includes("expiresAt")
+        ) {
+          sendJson(response, 400, {
+            error: "Invalid issuance parameters",
+          });
+          return;
+        }
+
+        const principalId = input.principalId;
+        const expiresAt = input.expiresAt;
+        const issuedAt = now?.() ?? Date.now();
+
+        if (
+          typeof principalId !== "string" ||
+          principalId.length === 0 ||
+          principalId.length > 128 ||
+          principalId.trim() !== principalId ||
+          typeof expiresAt !== "number" ||
+          !Number.isSafeInteger(expiresAt) ||
+          !Number.isSafeInteger(issuedAt) ||
+          issuedAt < 0 ||
+          expiresAt <= issuedAt
+        ) {
+          sendJson(response, 400, {
+            error: "Invalid issuance parameters",
+          });
+          return;
+        }
+
+        try {
+          const issued = await issueDeveloperApiKey({
+            issuer,
+            principalId,
+            vault: runtimeVault,
+            scopes: ["activity:read"],
+            expiresAt,
+            now: issuedAt,
+            repository: managementRepository,
+          });
+
+          sendJson(response, 201, issued);
+        } catch {
+          // Never log generated tokens, database errors, or
+          // sensitive credential material.
+          console.error("Credential issuance failed");
+
+          sendJson(response, 503, {
+            error: "Credential issuance temporarily unavailable",
+          });
+        }
+
         return;
       }
 

@@ -3,6 +3,8 @@ import test from "node:test";
 import { createServer } from "node:http";
 import { once } from "node:events";
 
+import { request as httpRequest } from "node:http";
+
 import { createApiHandler } from "./api-handler";
 import { InMemoryDeveloperApiKeyRepository } from "./api-key-memory-repository";
 
@@ -22,7 +24,10 @@ async function withManagementApi(
     repository: InMemoryDeveloperApiKeyRepository,
     calls: { list: number }
   ) => Promise<void>,
-  options: { disableManagement?: boolean } = {}
+  options: {
+    disableManagement?: boolean;
+    failCreate?: boolean;
+  } = {}
 ): Promise<void> {
   const repository = new InMemoryDeveloperApiKeyRepository();
 
@@ -52,7 +57,17 @@ async function withManagementApi(
               calls.list++;
               return repository.listByPrincipal(principalId);
             },
+            create: async (record) => {
+              if (options.failCreate) {
+                throw new Error("Sensitive internal PostgreSQL failure");
+              }
+
+              return repository.create(record);
+            },
           },
+
+      // IMPORTANT: This belongs outside managementRepository.
+      lookupDeveloperKey: (keyId) => repository.findById(keyId),
 
       now: () => NOW,
 
@@ -248,4 +263,347 @@ test("management listing fails closed without repository configuration", async (
     },
     { disableManagement: true }
   );
+});
+
+test("owner can issue a developer API key over HTTP", async () => {
+  await withManagementApi(async (url, repository) => {
+    const response = await fetch(`${url}/api/keys`, {
+      method: "POST",
+      headers: {
+        ...ownerHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        principalId: "developer_002",
+        expiresAt: NOW + 86_400_000,
+      }),
+    });
+
+    assert.equal(response.status, 201);
+
+    const body = await response.json();
+
+    assert.match(body.token, /^avk_/);
+    assert.equal(typeof body.keyId, "string");
+
+    const stored = await repository.findById(body.keyId);
+
+    assert.ok(stored);
+    assert.equal(stored.principalId, "developer_002");
+    assert.deepEqual(stored.vaults, [VAULT_A]);
+    assert.deepEqual(stored.scopes, ["activity:read"]);
+    assert.equal(stored.expiresAt, NOW + 86_400_000);
+
+    assert.notEqual(stored.tokenHash, body.token);
+    assert.equal(JSON.stringify(stored).includes(body.token), false);
+
+    assert.equal(response.headers.get("cache-control"), "no-store");
+  });
+});
+
+test("developer cannot issue API keys over HTTP", async () => {
+  await withManagementApi(async (url, repository) => {
+    const response = await fetch(`${url}/api/keys`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credentials.developerToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        principalId: "developer_002",
+        expiresAt: NOW + 86_400_000,
+      }),
+    });
+
+    assert.equal(response.status, 401);
+    assert.deepEqual(await repository.listByPrincipal("developer_002"), []);
+  });
+});
+
+test("HTTP issuance rejects missing expiration", async () => {
+  await withManagementApi(async (url, repository) => {
+    const response = await fetch(`${url}/api/keys`, {
+      method: "POST",
+      headers: {
+        ...ownerHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        principalId: "developer_002",
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await repository.listByPrincipal("developer_002"), []);
+  });
+});
+
+test("HTTP issuance rejects client-supplied vault and scopes", async () => {
+  await withManagementApi(async (url, repository) => {
+    const response = await fetch(`${url}/api/keys`, {
+      method: "POST",
+      headers: {
+        ...ownerHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        principalId: "developer_002",
+        expiresAt: NOW + 86_400_000,
+        vault: VAULT_A,
+        scopes: ["treasury:read"],
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await repository.listByPrincipal("developer_002"), []);
+  });
+});
+
+test("HTTP issuance rejects malformed JSON", async () => {
+  await withManagementApi(async (url, repository) => {
+    const response = await fetch(`${url}/api/keys`, {
+      method: "POST",
+      headers: {
+        ...ownerHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: '{"principalId":',
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await repository.listByPrincipal("developer_002"), []);
+  });
+});
+
+test("HTTP issuance rejects oversized request bodies", async () => {
+  await withManagementApi(async (url, repository) => {
+    const response = await fetch(`${url}/api/keys`, {
+      method: "POST",
+      headers: {
+        ...ownerHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        principalId: "developer_002",
+        expiresAt: NOW + 86_400_000,
+        padding: "x".repeat(5000),
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await repository.listByPrincipal("developer_002"), []);
+  });
+});
+
+test("HTTP issuance rejects expired and invalid timestamps", async () => {
+  await withManagementApi(async (url, repository) => {
+    for (const expiresAt of [NOW, NOW - 1, null, "tomorrow", 1.5]) {
+      const response = await fetch(`${url}/api/keys`, {
+        method: "POST",
+        headers: {
+          ...ownerHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          principalId: "developer_002",
+          expiresAt,
+        }),
+      });
+
+      assert.equal(response.status, 400);
+    }
+
+    assert.deepEqual(await repository.listByPrincipal("developer_002"), []);
+  });
+});
+
+test("HTTP issuance rejects unsupported content types", async () => {
+  await withManagementApi(async (url, repository) => {
+    const response = await fetch(`${url}/api/keys`, {
+      method: "POST",
+      headers: {
+        ...ownerHeaders(),
+        "Content-Type": "text/plain",
+      },
+      body: JSON.stringify({
+        principalId: "developer_002",
+        expiresAt: NOW + 86_400_000,
+      }),
+    });
+
+    assert.equal(response.status, 415);
+    assert.deepEqual(await repository.listByPrincipal("developer_002"), []);
+  });
+});
+
+test("HTTP issuance rejects duplicate Authorization headers", async () => {
+  await withManagementApi(async (url, repository) => {
+    const response = await fetch(`${url}/api/keys`, {
+      method: "POST",
+      headers: [
+        ["Authorization", `Bearer ${credentials.ownerToken}`],
+        ["Authorization", `Bearer ${credentials.ownerToken}`],
+        ["Content-Type", "application/json"],
+      ],
+      body: JSON.stringify({
+        principalId: "developer_002",
+        expiresAt: NOW + 86_400_000,
+      }),
+    });
+
+    assert.equal(response.status, 401);
+    assert.deepEqual(await repository.listByPrincipal("developer_002"), []);
+  });
+});
+
+test("HTTP issuance rejects additional request fields", async () => {
+  await withManagementApi(async (url, repository) => {
+    const response = await fetch(`${url}/api/keys`, {
+      method: "POST",
+      headers: {
+        ...ownerHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        principalId: "developer_002",
+        expiresAt: NOW + 86_400_000,
+        issuer: "owner",
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await repository.listByPrincipal("developer_002"), []);
+  });
+});
+
+test("HTTP issuance never returns a token when persistence fails", async () => {
+  await withManagementApi(
+    async (url, repository) => {
+      const response = await fetch(`${url}/api/keys`, {
+        method: "POST",
+        headers: {
+          ...ownerHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          principalId: "developer_002",
+          expiresAt: NOW + 86_400_000,
+        }),
+      });
+
+      assert.equal(response.status, 503);
+
+      const body = await response.text();
+
+      assert.equal(body.includes("avk_"), false);
+      assert.equal(body.includes("Sensitive internal"), false);
+
+      assert.deepEqual(await repository.listByPrincipal("developer_002"), []);
+    },
+    { failCreate: true }
+  );
+});
+
+test("newly issued API key can read activity but not treasury", async () => {
+  await withManagementApi(async (url) => {
+    const issuanceResponse = await fetch(`${url}/api/keys`, {
+      method: "POST",
+      headers: {
+        ...ownerHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        principalId: "developer_002",
+        expiresAt: NOW + 86_400_000,
+      }),
+    });
+
+    assert.equal(issuanceResponse.status, 201);
+
+    const { token } = await issuanceResponse.json();
+
+    const activityResponse = await fetch(`${url}/api/activity`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    assert.equal(activityResponse.status, 200);
+
+    const treasuryResponse = await fetch(`${url}/api/treasury`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    assert.equal(treasuryResponse.status, 403);
+
+    const managementResponse = await fetch(
+      `${url}/api/keys?principalId=developer_002`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    assert.equal(managementResponse.status, 401);
+  });
+});
+
+test("HTTP issuance rejects separate raw Authorization headers", async () => {
+  await withManagementApi(async (url, repository) => {
+    const payload = JSON.stringify({
+      principalId: "developer_002",
+      expiresAt: NOW + 86_400_000,
+    });
+
+    const result = await new Promise<{
+      status: number | undefined;
+      body: string;
+    }>((resolve, reject) => {
+      const request = httpRequest(
+        `${url}/api/keys`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(payload),
+          },
+          joinDuplicateHeaders: false,
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+
+          response.on("data", (chunk: Buffer) => {
+            chunks.push(chunk);
+          });
+
+          response.on("end", () => {
+            resolve({
+              status: response.statusCode,
+              body: Buffer.concat(chunks).toString("utf8"),
+            });
+          });
+
+          response.on("error", reject);
+        }
+      );
+
+      request.on("error", reject);
+
+      // Send two separate Authorization header lines.
+      request.setHeader("Authorization", [
+        `Bearer ${credentials.ownerToken}`,
+        `Bearer ${credentials.ownerToken}`,
+      ]);
+
+      request.end(payload);
+    });
+
+    assert.equal(result.status, 401);
+    assert.equal(result.body.includes("avk_"), false);
+
+    assert.deepEqual(await repository.listByPrincipal("developer_002"), []);
+  });
 });
