@@ -7,7 +7,10 @@ import { issueDeveloperApiKey } from "./api-key-issuance";
 
 import { authenticateManagementOwner } from "./api-management-auth";
 
-import { listManagedDeveloperApiKeys } from "./api-key-management";
+import {
+  listManagedDeveloperApiKeys,
+  revokeManagedDeveloperApiKey,
+} from "./api-key-management";
 
 import type { DeveloperApiKeyRepository } from "./api-key-repository";
 
@@ -41,7 +44,7 @@ export type ApiHandlerConfig = {
 
   managementRepository?: Pick<
     DeveloperApiKeyRepository,
-    "listByPrincipal" | "create"
+    "listByPrincipal" | "create" | "revokeForVault"
   >;
 };
 
@@ -98,6 +101,110 @@ export function createApiHandler(config: ApiHandlerConfig): RequestListener {
 
   return async (request: IncomingMessage, response: ServerResponse) => {
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+
+    if (pathname === "/api/keys/revoke") {
+      if (request.method !== "POST") {
+        sendJson(response, 405, { error: "Method not allowed" });
+        return;
+      }
+
+      if (!managementRepository?.revokeForVault) {
+        sendJson(response, 503, {
+          error: "Credential management unavailable",
+        });
+        return;
+      }
+
+      const issuer = authenticateManagementOwner(
+        request,
+        credentials,
+        runtimeVault
+      );
+
+      if (!issuer) {
+        sendJson(response, 401, { error: "Unauthorized" });
+        return;
+      }
+
+      const contentType = request.headers["content-type"];
+
+      if (
+        typeof contentType !== "string" ||
+        !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(contentType)
+      ) {
+        sendJson(response, 415, { error: "Unsupported media type" });
+        return;
+      }
+
+      let body: unknown;
+
+      try {
+        body = await readManagementJsonBody(request);
+      } catch {
+        sendJson(response, 400, { error: "Invalid request body" });
+        return;
+      }
+
+      if (typeof body !== "object" || body === null || Array.isArray(body)) {
+        sendJson(response, 400, { error: "Invalid request body" });
+        return;
+      }
+
+      const input = body as Record<string, unknown>;
+
+      if (
+        Object.keys(input).length !== 1 ||
+        !Object.prototype.hasOwnProperty.call(input, "keyId") ||
+        typeof input.keyId !== "string"
+      ) {
+        sendJson(response, 400, {
+          error: "Invalid revocation parameters",
+        });
+        return;
+      }
+
+      const keyId = input.keyId;
+      const revokedAt = now?.() ?? Date.now();
+
+      // Validate before touching the repository.
+      if (
+        !/^[a-f0-9]{24}$/.test(keyId) ||
+        !Number.isSafeInteger(revokedAt) ||
+        revokedAt < 0
+      ) {
+        sendJson(response, 400, {
+          error: "Invalid revocation parameters",
+        });
+        return;
+      }
+
+      try {
+        const revoked = await revokeManagedDeveloperApiKey({
+          issuer,
+          keyId,
+          vault: runtimeVault,
+          revokedAt,
+          repository: managementRepository,
+        });
+
+        if (!revoked) {
+          // Do not distinguish unknown, already-revoked,
+          // or unauthorized-vault credentials.
+          sendJson(response, 404, { error: "Credential not found" });
+          return;
+        }
+
+        sendJson(response, 200, { revoked: true });
+      } catch {
+        console.error("Credential revocation failed");
+
+        sendJson(response, 503, {
+          error: "Credential revocation temporarily unavailable",
+        });
+      }
+
+      return;
+    }
 
     if (pathname === "/api/keys") {
       // Explicitly restrict this management route to GET.

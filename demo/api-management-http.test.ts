@@ -27,6 +27,7 @@ async function withManagementApi(
   options: {
     disableManagement?: boolean;
     failCreate?: boolean;
+    failRevoke?: boolean;
   } = {}
 ): Promise<void> {
   const repository = new InMemoryDeveloperApiKeyRepository();
@@ -63,6 +64,15 @@ async function withManagementApi(
               }
 
               return repository.create(record);
+            },
+            revokeForVault: async (keyId, vault, revokedAt) => {
+              if (options.failRevoke) {
+                throw new Error(
+                  "Sensitive internal PostgreSQL revocation failure"
+                );
+              }
+
+              return repository.revokeForVault(keyId, vault, revokedAt);
             },
           },
 
@@ -605,5 +615,335 @@ test("HTTP issuance rejects separate raw Authorization headers", async () => {
     assert.equal(result.body.includes("avk_"), false);
 
     assert.deepEqual(await repository.listByPrincipal("developer_002"), []);
+  });
+});
+
+test("owner can revoke an existing developer key over HTTP", async () => {
+  await withManagementApi(async (url, repository) => {
+    const keyId = "a".repeat(24);
+
+    const response = await fetch(`${url}/api/keys/revoke`, {
+      method: "POST",
+      headers: {
+        ...ownerHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ keyId }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      revoked: true,
+    });
+
+    const stored = await repository.findById(keyId);
+
+    assert.ok(stored);
+    assert.equal(stored.revokedAt, NOW);
+  });
+});
+
+test("developer cannot revoke credentials over HTTP", async () => {
+  await withManagementApi(async (url, repository) => {
+    const keyId = "a".repeat(24);
+
+    const response = await fetch(`${url}/api/keys/revoke`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credentials.developerToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ keyId }),
+    });
+
+    assert.equal(response.status, 401);
+
+    const stored = await repository.findById(keyId);
+
+    assert.ok(stored);
+    assert.equal(stored.revokedAt, null);
+  });
+});
+
+test("HTTP revocation rejects malformed key identifiers", async () => {
+  await withManagementApi(async (url, repository) => {
+    for (const keyId of ["", "invalid", 123, null]) {
+      const response = await fetch(`${url}/api/keys/revoke`, {
+        method: "POST",
+        headers: {
+          ...ownerHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ keyId }),
+      });
+
+      assert.equal(response.status, 400);
+    }
+
+    const stored = await repository.findById("a".repeat(24));
+
+    assert.ok(stored);
+    assert.equal(stored.revokedAt, null);
+  });
+});
+
+test("revoked developer API key immediately loses activity access", async () => {
+  await withManagementApi(async (url) => {
+    const issuanceResponse = await fetch(`${url}/api/keys`, {
+      method: "POST",
+      headers: {
+        ...ownerHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        principalId: "developer_002",
+        expiresAt: NOW + 86_400_000,
+      }),
+    });
+
+    assert.equal(issuanceResponse.status, 201);
+
+    const { keyId, token } = await issuanceResponse.json();
+
+    const beforeRevocation = await fetch(`${url}/api/activity`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    assert.equal(beforeRevocation.status, 200);
+
+    const revokeResponse = await fetch(`${url}/api/keys/revoke`, {
+      method: "POST",
+      headers: {
+        ...ownerHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ keyId }),
+    });
+
+    assert.equal(revokeResponse.status, 200);
+    assert.deepEqual(await revokeResponse.json(), { revoked: true });
+
+    const afterRevocation = await fetch(`${url}/api/activity`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    assert.equal(afterRevocation.status, 401);
+  });
+});
+
+test("HTTP revocation does not disclose unknown or already-revoked keys", async () => {
+  await withManagementApi(async (url) => {
+    const revoke = async (keyId: string) => {
+      const response = await fetch(`${url}/api/keys/revoke`, {
+        method: "POST",
+        headers: {
+          ...ownerHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ keyId }),
+      });
+
+      return {
+        status: response.status,
+        body: await response.json(),
+      };
+    };
+
+    const unknown = await revoke("f".repeat(24));
+    assert.equal(unknown.status, 404);
+
+    const existingKeyId = "a".repeat(24);
+
+    const first = await revoke(existingKeyId);
+    assert.equal(first.status, 200);
+
+    const repeated = await revoke(existingKeyId);
+    assert.equal(repeated.status, 404);
+
+    assert.deepEqual(unknown.body, repeated.body);
+  });
+});
+
+test("HTTP revocation cannot revoke credentials from another vault", async () => {
+  await withManagementApi(async (url, repository) => {
+    const keyId = "c".repeat(24);
+
+    await repository.create({
+      keyId,
+      tokenHash: "d".repeat(64),
+      principalId: "developer_external",
+      vaults: ["Stake11111111111111111111111111111111111111"],
+      scopes: ["activity:read"],
+      createdAt: NOW - 1000,
+      expiresAt: NOW + 86_400_000,
+      revokedAt: null,
+    });
+
+    const response = await fetch(`${url}/api/keys/revoke`, {
+      method: "POST",
+      headers: {
+        ...ownerHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ keyId }),
+    });
+
+    assert.equal(response.status, 404);
+
+    const stored = await repository.findById(keyId);
+    assert.ok(stored);
+    assert.equal(stored.revokedAt, null);
+  });
+});
+
+test("HTTP revocation rejects malformed JSON and additional fields", async () => {
+  await withManagementApi(async (url, repository) => {
+    const requests = [
+      '{"keyId":',
+      JSON.stringify({
+        keyId: "a".repeat(24),
+        vault: VAULT_A,
+      }),
+      JSON.stringify({
+        keyId: "a".repeat(24),
+        padding: "x".repeat(5000),
+      }),
+    ];
+
+    for (const body of requests) {
+      const response = await fetch(`${url}/api/keys/revoke`, {
+        method: "POST",
+        headers: {
+          ...ownerHeaders(),
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+
+      assert.equal(response.status, 400);
+    }
+
+    const stored = await repository.findById("a".repeat(24));
+    assert.ok(stored);
+    assert.equal(stored.revokedAt, null);
+  });
+});
+
+test("HTTP revocation rejects unsupported methods and media types", async () => {
+  await withManagementApi(async (url, repository) => {
+    const getResponse = await fetch(`${url}/api/keys/revoke`, {
+      method: "GET",
+      headers: ownerHeaders(),
+    });
+
+    assert.equal(getResponse.status, 405);
+
+    const postResponse = await fetch(`${url}/api/keys/revoke`, {
+      method: "POST",
+      headers: {
+        ...ownerHeaders(),
+        "Content-Type": "text/plain",
+      },
+      body: JSON.stringify({ keyId: "a".repeat(24) }),
+    });
+
+    assert.equal(postResponse.status, 415);
+
+    const stored = await repository.findById("a".repeat(24));
+    assert.ok(stored);
+    assert.equal(stored.revokedAt, null);
+  });
+});
+
+test("HTTP revocation fails closed when repository revocation fails", async () => {
+  await withManagementApi(
+    async (url, repository) => {
+      const keyId = "a".repeat(24);
+
+      const response = await fetch(`${url}/api/keys/revoke`, {
+        method: "POST",
+        headers: {
+          ...ownerHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ keyId }),
+      });
+
+      assert.equal(response.status, 503);
+
+      const body = await response.text();
+
+      assert.equal(body.includes("Sensitive internal"), false);
+      assert.equal(body.includes("PostgreSQL"), false);
+      assert.equal(body.includes("tokenHash"), false);
+
+      const stored = await repository.findById(keyId);
+
+      assert.ok(stored);
+      assert.equal(stored.revokedAt, null);
+    },
+    { failRevoke: true }
+  );
+});
+
+test("HTTP revocation rejects separate raw Authorization headers", async () => {
+  await withManagementApi(async (url, repository) => {
+    const payload = JSON.stringify({
+      keyId: "a".repeat(24),
+    });
+
+    const result = await new Promise<{
+      status: number | undefined;
+      body: string;
+    }>((resolve, reject) => {
+      const request = httpRequest(
+        `${url}/api/keys/revoke`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(payload),
+          },
+          joinDuplicateHeaders: false,
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+
+          response.on("data", (chunk: Buffer) => {
+            chunks.push(chunk);
+          });
+
+          response.on("end", () => {
+            resolve({
+              status: response.statusCode,
+              body: Buffer.concat(chunks).toString("utf8"),
+            });
+          });
+
+          response.on("error", reject);
+        }
+      );
+
+      request.on("error", reject);
+
+      request.setHeader("Authorization", [
+        `Bearer ${credentials.ownerToken}`,
+        `Bearer ${credentials.ownerToken}`,
+      ]);
+
+      request.end(payload);
+    });
+
+    assert.equal(result.status, 401);
+    assert.equal(result.body.includes("avk_"), false);
+
+    const stored = await repository.findById("a".repeat(24));
+
+    assert.ok(stored);
+    assert.equal(stored.revokedAt, null);
   });
 });
