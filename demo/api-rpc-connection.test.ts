@@ -104,7 +104,7 @@ test("Connection rejects a stalled RPC response", async () => {
 
   const connection = createTestConnection(fetchImpl);
 
-  await assert.rejects(connection.getGenesisHash(), /aborted/);
+  await assert.rejects(connection.getGenesisHash(), /RPC request timed out/);
 
   assert.equal(aborted, true);
 });

@@ -34,10 +34,48 @@ export function createBoundedRpcFetch(
         throw controller.signal.reason;
       }
 
-      const response = await fetchImpl(input, {
-        ...init,
-        signal: controller.signal,
+      const fetchPromise = Promise.resolve(
+        fetchImpl(input, {
+          ...init,
+          signal: controller.signal,
+        })
+      );
+
+      let onAbort!: () => void;
+
+      const aborted = new Promise<never>((_resolve, reject) => {
+        onAbort = () => {
+          reject(controller.signal.reason ?? new Error("RPC request aborted"));
+        };
+
+        controller.signal.addEventListener("abort", onAbort, {
+          once: true,
+        });
+
+        if (controller.signal.aborted) {
+          onAbort();
+        }
       });
+
+      let response: Response;
+
+      try {
+        response = await Promise.race([fetchPromise, aborted]);
+      } catch (error) {
+        // If fetch eventually resolves after our deadline, discard its body.
+        // Do not wait for cancellation: a non-cooperative stream may hang.
+        void fetchPromise
+          .then((lateResponse) => {
+            if (lateResponse.body) {
+              void lateResponse.body.cancel().catch(() => undefined);
+            }
+          })
+          .catch(() => undefined);
+
+        throw error;
+      } finally {
+        controller.signal.removeEventListener("abort", onAbort);
+      }
 
       const contentLength = response.headers.get("content-length");
 

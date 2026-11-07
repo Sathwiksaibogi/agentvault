@@ -37,13 +37,17 @@ test("RPC transport aborts a stalled fetch", async () => {
 
   const boundedFetch = createBoundedRpcFetch(fetchImpl, 30);
 
-  await assert.rejects(boundedFetch("https://rpc.example.test"), /aborted/);
+  await assert.rejects(
+    boundedFetch("https://rpc.example.test"),
+    /RPC request timed out/
+  );
 
   assert.equal(aborted, true);
 });
 
 test("RPC transport preserves caller cancellation", async () => {
   const controller = new AbortController();
+  const cancellationReason = new Error("caller aborted");
   let aborted = false;
 
   const fetchImpl: typeof fetch = async (_input, init) =>
@@ -52,7 +56,7 @@ test("RPC transport preserves caller cancellation", async () => {
         "abort",
         () => {
           aborted = true;
-          reject(new Error("caller aborted"));
+          reject(new Error("fetch observed cancellation"));
         },
         { once: true }
       );
@@ -64,9 +68,13 @@ test("RPC transport preserves caller cancellation", async () => {
     signal: controller.signal,
   });
 
-  controller.abort();
+  controller.abort(cancellationReason);
 
-  await assert.rejects(request, /caller aborted/);
+  await assert.rejects(
+    request,
+    (error: unknown) => error === cancellationReason
+  );
+
   assert.equal(aborted, true);
 });
 
@@ -224,4 +232,59 @@ test("RPC transport cancels a response rejected by Content-Length", async () => 
   );
 
   assert.equal(cancelled, true);
+});
+
+test("RPC transport deadline settles even when fetch ignores abort", async () => {
+  let observedSignal: AbortSignal | undefined;
+
+  const nonCooperativeFetch = (async (
+    _input: RequestInfo | URL,
+    init?: RequestInit
+  ): Promise<Response> => {
+    observedSignal = init?.signal ?? undefined;
+
+    // Simulates a transport that never resolves and ignores abort.
+    return new Promise<Response>(() => {});
+  }) as typeof fetch;
+
+  const boundedFetch = createBoundedRpcFetch(nonCooperativeFetch, 30);
+
+  await assert.rejects(
+    boundedFetch("http://localhost:8899", {
+      method: "POST",
+      body: "{}",
+    }),
+    /RPC request timed out/
+  );
+
+  assert.equal(observedSignal?.aborted, true);
+});
+
+test("RPC transport discards a response arriving after its deadline", async () => {
+  let resolveFetch!: (response: Response) => void;
+  let bodyCancelled = false;
+
+  const fetchImpl: typeof fetch = async () =>
+    new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+
+  const boundedFetch = createBoundedRpcFetch(fetchImpl, 30);
+
+  const request = boundedFetch("https://rpc.example.test");
+
+  await assert.rejects(request, /RPC request timed out/);
+
+  const lateBody = new ReadableStream<Uint8Array>({
+    cancel() {
+      bodyCancelled = true;
+    },
+  });
+
+  resolveFetch(new Response(lateBody, { status: 200 }));
+
+  // Allow the late-response cleanup continuation to execute.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(bodyCancelled, true);
 });
