@@ -58,6 +58,22 @@ test("database configuration creates a PostgreSQL repository", async () => {
   }
 });
 
+test("database pool enforces bounded query execution", async () => {
+  const database = createApiDatabase({
+    AGENTVAULT_DATABASE_URL:
+      "postgresql://agentvault:test-password@127.0.0.1:5432/agentvault",
+  } as NodeJS.ProcessEnv);
+
+  try {
+    assert.equal(database.pool.options.max, 5);
+    assert.equal(database.pool.options.connectionTimeoutMillis, 3000);
+    assert.equal(database.pool.options.statement_timeout, 5000);
+    assert.equal(database.pool.options.query_timeout, 6000);
+  } finally {
+    await database.pool.end();
+  }
+});
+
 test("database readiness rejects a missing authentication table", async () => {
   const database = createApiDatabase({
     AGENTVAULT_DATABASE_URL:
