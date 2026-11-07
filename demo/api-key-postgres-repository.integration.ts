@@ -421,3 +421,37 @@ test("PostgreSQL permits only one concurrent vault-scoped revocation", async () 
     }
   }
 });
+
+test("PostgreSQL vault-scoped revocation rejects multi-vault credentials", async () => {
+  await withRollback(async (repository) => {
+    const vaultA = "11111111111111111111111111111111";
+    const vaultB = "SysvarC1ock11111111111111111111111111111111";
+
+    const record = createTestRecord({
+      vaults: [vaultA, vaultB],
+    });
+
+    await repository.create(record);
+
+    assert.equal(
+      await repository.revokeForVault(
+        record.keyId,
+        vaultA,
+        record.createdAt + 1000
+      ),
+      false
+    );
+
+    assert.equal(
+      await repository.revokeForVault(
+        record.keyId,
+        vaultB,
+        record.createdAt + 1000
+      ),
+      false
+    );
+
+    const stored = await repository.findById(record.keyId);
+    assert.equal(stored?.revokedAt, null);
+  });
+});

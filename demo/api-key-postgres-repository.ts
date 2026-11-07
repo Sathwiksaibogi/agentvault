@@ -163,7 +163,8 @@ export class PostgresDeveloperApiKeyRepository
       UPDATE developer_api_keys
       SET revoked_at = $3
       WHERE key_id = $1
-        AND $2 = ANY(vaults)
+        AND cardinality(vaults) = 1
+        AND vaults[1] = $2
         AND revoked_at IS NULL
         AND created_at <= $3
       RETURNING key_id

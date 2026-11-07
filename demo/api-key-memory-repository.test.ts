@@ -166,3 +166,35 @@ test("vault-scoped revocation rejects unauthorized vaults", async () => {
     false
   );
 });
+
+test("vault-scoped revocation rejects multi-vault credentials", async () => {
+  const repository = new InMemoryDeveloperApiKeyRepository();
+
+  const keyId = "a".repeat(24);
+  const vaultA = "11111111111111111111111111111111";
+  const vaultB = "SysvarC1ock11111111111111111111111111111111";
+  const createdAt = 1_800_000_000_000;
+
+  await repository.create({
+    keyId,
+    principalId: "developer_001",
+    tokenHash: "b".repeat(64),
+    vaults: [vaultA, vaultB],
+    scopes: ["activity:read"],
+    createdAt,
+    expiresAt: null,
+    revokedAt: null,
+  });
+
+  assert.equal(
+    await repository.revokeForVault(keyId, vaultA, createdAt + 1000),
+    false
+  );
+
+  assert.equal(
+    await repository.revokeForVault(keyId, vaultB, createdAt + 1000),
+    false
+  );
+
+  assert.equal((await repository.findById(keyId))?.revokedAt, null);
+});

@@ -86,9 +86,9 @@ export class InMemoryDeveloperApiKeyRepository
       return false;
     }
 
-    // A credential cannot be revoked through
-    // a vault to which it is not assigned.
-    if (!record.vaults.includes(vault)) {
+    // Management revocation supports single-vault credentials only.
+    // A shared credential must not be revoked by one vault's owner.
+    if (record.vaults.length !== 1 || record.vaults[0] !== vault) {
       return false;
     }
 
