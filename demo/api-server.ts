@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { createApiHandler } from "./api-handler";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createBoundedRpcFetch } from "./api-rpc-security";
 import { configureApiHttpServer } from "./api-http-security";
 
 import { createApiDatabase, verifyApiDatabase } from "./api-database";
@@ -72,7 +73,11 @@ const idl = JSON.parse(
   readFileSync(join(process.cwd(), "target/idl/agentvault.json"), "utf8")
 ) as Agentvault;
 
-const connection = new Connection(RPC_URL, "confirmed");
+const connection = new Connection(RPC_URL, {
+  commitment: "confirmed",
+  fetch: createBoundedRpcFetch(fetch),
+  disableRetryOnRateLimit: true,
+});
 
 const program = new anchor.Program<Agentvault>(idl, {
   connection,
