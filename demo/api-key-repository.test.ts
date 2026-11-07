@@ -1,4 +1,3 @@
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -35,6 +34,7 @@ test("repository contract supports scoped credential operations", () => {
     findById: async () => null,
     create: async () => {},
     revoke: async () => false,
+    revokeForVault: async () => false,
     listByPrincipal: async () => [],
   };
 

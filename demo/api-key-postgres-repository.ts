@@ -1,9 +1,6 @@
-
 import type { Pool, PoolClient } from "pg";
 import type { ApiScope } from "./api-principal";
-import type {
-  DeveloperApiKeyRecord,
-} from "./api-key-model";
+import type { DeveloperApiKeyRecord } from "./api-key-model";
 
 import type {
   DeveloperApiKeyMetadata,
@@ -64,9 +61,7 @@ function toRecord(row: ApiKeyRow): DeveloperApiKeyRecord {
   };
 }
 
-function toMetadata(
-  row: ApiKeyMetadataRow,
-): DeveloperApiKeyMetadata {
+function toMetadata(row: ApiKeyMetadataRow): DeveloperApiKeyMetadata {
   return {
     keyId: row.key_id,
     principalId: row.principal_id,
@@ -79,15 +74,11 @@ function toMetadata(
 }
 
 export class PostgresDeveloperApiKeyRepository
-  implements DeveloperApiKeyRepository {
+  implements DeveloperApiKeyRepository
+{
+  constructor(private readonly db: Pick<Pool | PoolClient, "query">) {}
 
-  constructor(
-  private readonly db: Pick<Pool | PoolClient, "query">,
-) {}
-
-  async findById(
-    keyId: string,
-  ): Promise<DeveloperApiKeyRecord | null> {
+  async findById(keyId: string): Promise<DeveloperApiKeyRecord | null> {
     const result = await this.db.query<ApiKeyRow>(
       `
       SELECT
@@ -102,7 +93,7 @@ export class PostgresDeveloperApiKeyRepository
       FROM developer_api_keys
       WHERE key_id = $1
       `,
-      [keyId],
+      [keyId]
     );
 
     const row = result.rows[0];
@@ -110,9 +101,7 @@ export class PostgresDeveloperApiKeyRepository
     return row ? toRecord(row) : null;
   }
 
-  async create(
-    record: DeveloperApiKeyRecord,
-  ): Promise<void> {
+  async create(record: DeveloperApiKeyRecord): Promise<void> {
     await this.db.query(
       `
       INSERT INTO developer_api_keys (
@@ -136,14 +125,11 @@ export class PostgresDeveloperApiKeyRepository
         record.createdAt,
         record.expiresAt,
         record.revokedAt,
-      ],
+      ]
     );
   }
 
-  async revoke(
-    keyId: string,
-    revokedAt: number,
-  ): Promise<boolean> {
+  async revoke(keyId: string, revokedAt: number): Promise<boolean> {
     if (!Number.isSafeInteger(revokedAt) || revokedAt < 0) {
       throw new Error("Invalid revocation timestamp");
     }
@@ -157,14 +143,39 @@ export class PostgresDeveloperApiKeyRepository
         AND created_at <= $2
       RETURNING key_id
       `,
-      [keyId, revokedAt],
+      [keyId, revokedAt]
+    );
+
+    return result.rowCount === 1;
+  }
+
+  async revokeForVault(
+    keyId: string,
+    vault: string,
+    revokedAt: number
+  ): Promise<boolean> {
+    if (!Number.isSafeInteger(revokedAt) || revokedAt < 0) {
+      throw new Error("Invalid revocation timestamp");
+    }
+
+    const result = await this.db.query(
+      `
+      UPDATE developer_api_keys
+      SET revoked_at = $3
+      WHERE key_id = $1
+        AND $2 = ANY(vaults)
+        AND revoked_at IS NULL
+        AND created_at <= $3
+      RETURNING key_id
+      `,
+      [keyId, vault, revokedAt]
     );
 
     return result.rowCount === 1;
   }
 
   async listByPrincipal(
-    principalId: string,
+    principalId: string
   ): Promise<DeveloperApiKeyMetadata[]> {
     const result = await this.db.query<ApiKeyMetadataRow>(
       `
@@ -180,7 +191,7 @@ export class PostgresDeveloperApiKeyRepository
       WHERE principal_id = $1
       ORDER BY created_at DESC, key_id ASC
       `,
-      [principalId],
+      [principalId]
     );
 
     return result.rows.map(toMetadata);

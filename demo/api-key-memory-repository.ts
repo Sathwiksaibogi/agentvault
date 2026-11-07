@@ -1,4 +1,3 @@
-
 import type { DeveloperApiKeyRecord } from "./api-key-model";
 
 import type {
@@ -6,9 +5,7 @@ import type {
   DeveloperApiKeyRepository,
 } from "./api-key-repository";
 
-function cloneRecord(
-  record: DeveloperApiKeyRecord
-): DeveloperApiKeyRecord {
+function cloneRecord(record: DeveloperApiKeyRecord): DeveloperApiKeyRecord {
   return {
     ...record,
     vaults: [...record.vaults],
@@ -16,9 +13,7 @@ function cloneRecord(
   };
 }
 
-function toMetadata(
-  record: DeveloperApiKeyRecord
-): DeveloperApiKeyMetadata {
+function toMetadata(record: DeveloperApiKeyRecord): DeveloperApiKeyMetadata {
   return {
     keyId: record.keyId,
     principalId: record.principalId,
@@ -33,36 +28,23 @@ function toMetadata(
 export class InMemoryDeveloperApiKeyRepository
   implements DeveloperApiKeyRepository
 {
-  private readonly records = new Map<
-    string,
-    DeveloperApiKeyRecord
-  >();
+  private readonly records = new Map<string, DeveloperApiKeyRecord>();
 
-  async findById(
-    keyId: string
-  ): Promise<DeveloperApiKeyRecord | null> {
+  async findById(keyId: string): Promise<DeveloperApiKeyRecord | null> {
     const record = this.records.get(keyId);
 
     return record ? cloneRecord(record) : null;
   }
 
-  async create(
-    record: DeveloperApiKeyRecord
-  ): Promise<void> {
+  async create(record: DeveloperApiKeyRecord): Promise<void> {
     if (this.records.has(record.keyId)) {
       throw new Error("API key already exists");
     }
 
-    this.records.set(
-      record.keyId,
-      cloneRecord(record)
-    );
+    this.records.set(record.keyId, cloneRecord(record));
   }
 
-  async revoke(
-    keyId: string,
-    revokedAt: number
-  ): Promise<boolean> {
+  async revoke(keyId: string, revokedAt: number): Promise<boolean> {
     if (!Number.isSafeInteger(revokedAt) || revokedAt < 0) {
       throw new Error("Invalid revocation timestamp");
     }
@@ -78,9 +60,45 @@ export class InMemoryDeveloperApiKeyRepository
     }
 
     if (revokedAt < record.createdAt) {
-      throw new Error(
-        "Revocation cannot precede creation"
-      );
+      throw new Error("Revocation cannot precede creation");
+    }
+
+    this.records.set(keyId, {
+      ...record,
+      revokedAt,
+    });
+
+    return true;
+  }
+
+  async revokeForVault(
+    keyId: string,
+    vault: string,
+    revokedAt: number
+  ): Promise<boolean> {
+    if (!Number.isSafeInteger(revokedAt) || revokedAt < 0) {
+      throw new Error("Invalid revocation timestamp");
+    }
+
+    const record = this.records.get(keyId);
+
+    if (!record) {
+      return false;
+    }
+
+    // A credential cannot be revoked through
+    // a vault to which it is not assigned.
+    if (!record.vaults.includes(vault)) {
+      return false;
+    }
+
+    // Revocation is irreversible.
+    if (record.revokedAt !== null) {
+      return false;
+    }
+
+    if (revokedAt < record.createdAt) {
+      throw new Error("Revocation cannot precede creation");
     }
 
     this.records.set(keyId, {
@@ -95,10 +113,7 @@ export class InMemoryDeveloperApiKeyRepository
     principalId: string
   ): Promise<DeveloperApiKeyMetadata[]> {
     return [...this.records.values()]
-      .filter(
-        (record) =>
-          record.principalId === principalId
-      )
+      .filter((record) => record.principalId === principalId)
       .map(toMetadata);
   }
 }

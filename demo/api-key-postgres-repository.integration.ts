@@ -1,4 +1,3 @@
-
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { after, before, test } from "node:test";
@@ -17,7 +16,7 @@ const pool = new Pool({
 });
 
 function createTestRecord(
-  overrides: Partial<DeveloperApiKeyRecord> = {},
+  overrides: Partial<DeveloperApiKeyRecord> = {}
 ): DeveloperApiKeyRecord {
   return {
     keyId: randomBytes(12).toString("hex"),
@@ -35,8 +34,8 @@ function createTestRecord(
 async function withRollback(
   run: (
     repository: PostgresDeveloperApiKeyRepository,
-    client: PoolClient,
-  ) => Promise<void>,
+    client: PoolClient
+  ) => Promise<void>
 ): Promise<void> {
   const client = await pool.connect();
   let transactionStarted = false;
@@ -45,8 +44,7 @@ async function withRollback(
     await client.query("BEGIN");
     transactionStarted = true;
 
-    const repository =
-      new PostgresDeveloperApiKeyRepository(client);
+    const repository = new PostgresDeveloperApiKeyRepository(client);
 
     await run(repository, client);
   } finally {
@@ -62,7 +60,7 @@ async function withRollback(
 
 before(async () => {
   const result = await pool.query(
-    "SELECT current_database() AS database, current_user AS username",
+    "SELECT current_database() AS database, current_user AS username"
   );
 
   assert.equal(result.rows[0].database, "agentvault_test");
@@ -87,9 +85,7 @@ test("PostgreSQL creates and retrieves a credential", async () => {
 
 test("PostgreSQL returns null for an unknown key", async () => {
   await withRollback(async (repository) => {
-    const result = await repository.findById(
-      randomBytes(12).toString("hex"),
-    );
+    const result = await repository.findById(randomBytes(12).toString("hex"));
 
     assert.equal(result, null);
   });
@@ -107,7 +103,7 @@ test("PostgreSQL rejects duplicate key identifiers", async () => {
         typeof error === "object" &&
         error !== null &&
         "code" in error &&
-        error.code === "23505",
+        error.code === "23505"
     );
   });
 });
@@ -120,14 +116,11 @@ test("PostgreSQL revocation is irreversible", async () => {
 
     const revokedAt = record.createdAt + 1000;
 
-    assert.equal(
-      await repository.revoke(record.keyId, revokedAt),
-      true,
-    );
+    assert.equal(await repository.revoke(record.keyId, revokedAt), true);
 
     assert.equal(
       await repository.revoke(record.keyId, revokedAt + 1000),
-      false,
+      false
     );
 
     const stored = await repository.findById(record.keyId);
@@ -144,17 +137,17 @@ test("PostgreSQL rejects invalid revocation timestamps", async () => {
 
     await assert.rejects(
       repository.revoke(record.keyId, -1),
-      /Invalid revocation timestamp/,
+      /Invalid revocation timestamp/
     );
 
     await assert.rejects(
       repository.revoke(record.keyId, Number.NaN),
-      /Invalid revocation timestamp/,
+      /Invalid revocation timestamp/
     );
 
     assert.equal(
       await repository.revoke(record.keyId, record.createdAt - 1),
-      false,
+      false
     );
   });
 });
@@ -180,13 +173,13 @@ test("PostgreSQL lists only principal metadata", async () => {
 
     assert.deepEqual(
       new Set(results.map((record) => record.keyId)),
-      new Set([first.keyId, second.keyId]),
+      new Set([first.keyId, second.keyId])
     );
 
     for (const record of results) {
       assert.equal(
         Object.prototype.hasOwnProperty.call(record, "tokenHash"),
-        false,
+        false
       );
 
       assert.equal(record.principalId, principalId);
@@ -194,15 +187,13 @@ test("PostgreSQL lists only principal metadata", async () => {
   });
 });
 
-
 test("PostgreSQL propagates database query failures", async () => {
   const client = await pool.connect();
 
   try {
     await client.query("BEGIN");
 
-    const repository =
-      new PostgresDeveloperApiKeyRepository(client);
+    const repository = new PostgresDeveloperApiKeyRepository(client);
 
     // Deliberately trigger a PostgreSQL error.
     await assert.rejects(
@@ -211,7 +202,7 @@ test("PostgreSQL propagates database query failures", async () => {
         typeof error === "object" &&
         error !== null &&
         "code" in error &&
-        error.code === "22012",
+        error.code === "22012"
     );
 
     // PostgreSQL now marks this transaction as aborted.
@@ -222,7 +213,7 @@ test("PostgreSQL propagates database query failures", async () => {
         typeof error === "object" &&
         error !== null &&
         "code" in error &&
-        error.code === "25P02",
+        error.code === "25P02"
     );
   } finally {
     try {
@@ -232,10 +223,6 @@ test("PostgreSQL propagates database query failures", async () => {
     }
   }
 });
-
-
-
-
 
 test("PostgreSQL permits only one concurrent revocation", async () => {
   const record = createTestRecord();
@@ -269,15 +256,14 @@ test("PostgreSQL permits only one concurrent revocation", async () => {
 
     assert.ok(stored);
     assert.ok(
-      stored.revokedAt === revokedAt ||
-      stored.revokedAt === revokedAt + 1,
+      stored.revokedAt === revokedAt || stored.revokedAt === revokedAt + 1
     );
   } finally {
     try {
       // Exact-key cleanup, never a broad principal-based DELETE.
       await cleanupPool.query(
         "DELETE FROM developer_api_keys WHERE key_id = $1",
-        [record.keyId],
+        [record.keyId]
       );
     } finally {
       await cleanupPool.end();
@@ -285,4 +271,153 @@ test("PostgreSQL permits only one concurrent revocation", async () => {
   }
 });
 
+test("PostgreSQL vault-scoped revocation enforces vault membership", async () => {
+  await withRollback(async (repository) => {
+    const authorizedVault = "11111111111111111111111111111111";
 
+    const unauthorizedVault = "SysvarC1ock11111111111111111111111111111111";
+
+    const record = createTestRecord({
+      vaults: [authorizedVault],
+    });
+
+    await repository.create(record);
+
+    const revokedAt = record.createdAt + 1000;
+
+    // Wrong vault cannot revoke the credential.
+    assert.equal(
+      await repository.revokeForVault(
+        record.keyId,
+        unauthorizedVault,
+        revokedAt
+      ),
+      false
+    );
+
+    assert.equal((await repository.findById(record.keyId))?.revokedAt, null);
+
+    // Correct vault can revoke it.
+    assert.equal(
+      await repository.revokeForVault(record.keyId, authorizedVault, revokedAt),
+      true
+    );
+
+    assert.equal(
+      (await repository.findById(record.keyId))?.revokedAt,
+      revokedAt
+    );
+
+    // Revocation cannot be repeated.
+    assert.equal(
+      await repository.revokeForVault(
+        record.keyId,
+        authorizedVault,
+        revokedAt + 1000
+      ),
+      false
+    );
+
+    assert.equal(
+      (await repository.findById(record.keyId))?.revokedAt,
+      revokedAt
+    );
+  });
+});
+
+test("PostgreSQL scoped revocation rejects invalid timestamps and unknown keys", async () => {
+  await withRollback(async (repository) => {
+    const record = createTestRecord();
+
+    await repository.create(record);
+
+    const vault = record.vaults[0];
+
+    await assert.rejects(
+      repository.revokeForVault(record.keyId, vault, Number.NaN),
+      /Invalid revocation timestamp/
+    );
+
+    await assert.rejects(
+      repository.revokeForVault(record.keyId, vault, -1),
+      /Invalid revocation timestamp/
+    );
+
+    assert.equal(
+      await repository.revokeForVault(
+        record.keyId,
+        vault,
+        record.createdAt - 1
+      ),
+      false
+    );
+
+    assert.equal(
+      await repository.revokeForVault(
+        randomBytes(12).toString("hex"),
+        vault,
+        record.createdAt + 1000
+      ),
+      false
+    );
+
+    assert.equal((await repository.findById(record.keyId))?.revokedAt, null);
+  });
+});
+
+test("PostgreSQL permits only one concurrent vault-scoped revocation", async () => {
+  const record = createTestRecord();
+  const repository = new PostgresDeveloperApiKeyRepository(pool);
+
+  const cleanupPool = new Pool({
+    host: "127.0.0.1",
+    port: 5432,
+    database: "agentvault_test",
+    user: "agentvault_test_cleanup",
+    connectionTimeoutMillis: 3000,
+    max: 1,
+  });
+
+  try {
+    // Commit the fixture so concurrent connections can access it.
+    await repository.create(record);
+
+    const vault = record.vaults[0];
+    const revokedAt = record.createdAt + 1000;
+
+    const results = await Promise.all([
+      repository.revokeForVault(record.keyId, vault, revokedAt),
+      repository.revokeForVault(record.keyId, vault, revokedAt + 1),
+    ]);
+
+    // Exactly one request must succeed.
+    assert.deepEqual(results.sort(), [false, true]);
+
+    const stored = await repository.findById(record.keyId);
+
+    assert.ok(stored);
+    assert.ok(
+      stored.revokedAt === revokedAt || stored.revokedAt === revokedAt + 1
+    );
+
+    // A later request cannot change the revocation timestamp.
+    assert.equal(
+      await repository.revokeForVault(record.keyId, vault, revokedAt + 2000),
+      false
+    );
+
+    assert.equal(
+      (await repository.findById(record.keyId))?.revokedAt,
+      stored.revokedAt
+    );
+  } finally {
+    try {
+      await cleanupPool.query(
+        "DELETE FROM developer_api_keys WHERE key_id = $1",
+        [record.keyId]
+      );
+    } finally {
+      await cleanupPool.end();
+    }
+  }
+});

@@ -1,4 +1,3 @@
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -30,10 +29,7 @@ test("creates and retrieves a credential", async () => {
 
   await repo.create(record);
 
-  assert.deepEqual(
-    await repo.findById(record.keyId),
-    record
-  );
+  assert.deepEqual(await repo.findById(record.keyId), record);
 });
 
 test("rejects duplicate credential identifiers", async () => {
@@ -42,10 +38,7 @@ test("rejects duplicate credential identifiers", async () => {
 
   await repo.create(record);
 
-  await assert.rejects(
-    repo.create(record),
-    /already exists/
-  );
+  await assert.rejects(repo.create(record), /already exists/);
 });
 
 test("revokes an existing credential", async () => {
@@ -54,10 +47,7 @@ test("revokes an existing credential", async () => {
 
   await repo.create(record);
 
-  assert.equal(
-    await repo.revoke(record.keyId, NOW + 1000),
-    true
-  );
+  assert.equal(await repo.revoke(record.keyId, NOW + 1000), true);
 
   const stored = await repo.findById(record.keyId);
 
@@ -70,20 +60,11 @@ test("revocation is irreversible", async () => {
 
   await repo.create(record);
 
-  assert.equal(
-    await repo.revoke(record.keyId, NOW + 1000),
-    true
-  );
+  assert.equal(await repo.revoke(record.keyId, NOW + 1000), true);
 
-  assert.equal(
-    await repo.revoke(record.keyId, NOW + 2000),
-    false
-  );
+  assert.equal(await repo.revoke(record.keyId, NOW + 2000), false);
 
-  assert.equal(
-    (await repo.findById(record.keyId))?.revokedAt,
-    NOW + 1000
-  );
+  assert.equal((await repo.findById(record.keyId))?.revokedAt, NOW + 1000);
 });
 
 test("rejects invalid revocation timestamps", async () => {
@@ -106,10 +87,7 @@ test("rejects invalid revocation timestamps", async () => {
 test("unknown credentials cannot be revoked", async () => {
   const repo = new InMemoryDeveloperApiKeyRepository();
 
-  assert.equal(
-    await repo.revoke("unknown", NOW),
-    false
-  );
+  assert.equal(await repo.revoke("unknown", NOW), false);
 });
 
 test("lists only metadata for the requested principal", async () => {
@@ -124,9 +102,7 @@ test("lists only metadata for the requested principal", async () => {
     })
   );
 
-  const records = await repo.listByPrincipal(
-    "developer_001"
-  );
+  const records = await repo.listByPrincipal("developer_001");
 
   assert.equal(records.length, 1);
   assert.equal(records[0].principalId, "developer_001");
@@ -151,8 +127,42 @@ test("stored credentials are isolated from caller mutations", async () => {
 
   const retrievedAgain = await repo.findById(record.keyId);
 
-  assert.deepEqual(
-    retrievedAgain?.scopes,
-    ["activity:read"]
+  assert.deepEqual(retrievedAgain?.scopes, ["activity:read"]);
+});
+
+test("vault-scoped revocation rejects unauthorized vaults", async () => {
+  const repo = new InMemoryDeveloperApiKeyRepository();
+
+  const authorizedVault = "11111111111111111111111111111111";
+
+  const unauthorizedVault = "SysvarC1ock11111111111111111111111111111111";
+
+  const record = makeRecord({
+    vaults: [authorizedVault],
+  });
+
+  await repo.create(record);
+
+  // Another vault cannot revoke this credential.
+  assert.equal(
+    await repo.revokeForVault(record.keyId, unauthorizedVault, NOW + 1000),
+    false
+  );
+
+  // Unauthorized attempts must not mutate the record.
+  assert.equal((await repo.findById(record.keyId))?.revokedAt, null);
+
+  // The assigned vault can revoke the credential.
+  assert.equal(
+    await repo.revokeForVault(record.keyId, authorizedVault, NOW + 1000),
+    true
+  );
+
+  assert.equal((await repo.findById(record.keyId))?.revokedAt, NOW + 1000);
+
+  // Revocation is irreversible.
+  assert.equal(
+    await repo.revokeForVault(record.keyId, authorizedVault, NOW + 2000),
+    false
   );
 });
