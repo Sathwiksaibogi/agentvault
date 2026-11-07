@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { createApiHandler } from "./api-handler";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { configureApiHttpServer } from "./api-http-security";
 
 import { createApiDatabase, verifyApiDatabase } from "./api-database";
 
@@ -478,6 +479,7 @@ async function main(): Promise<void> {
         cachedRead,
       })
     );
+    configureApiHttpServer(server);
 
     let shuttingDown = false;
 
