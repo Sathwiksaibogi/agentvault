@@ -9,6 +9,7 @@ import { createBoundedRpcFetch } from "./api-rpc-security";
 import { configureApiHttpServer } from "./api-http-security";
 import { createApiReadCache } from "./api-read-cache";
 import { mapWithConcurrency } from "./api-concurrency";
+import { createRpcConcurrencyGate } from "./api-rpc-concurrency";
 
 import { createApiDatabase, verifyApiDatabase } from "./api-database";
 
@@ -75,9 +76,18 @@ const idl = JSON.parse(
   readFileSync(join(process.cwd(), "target/idl/agentvault.json"), "utf8")
 ) as Agentvault;
 
+const rpcConcurrencyGate = createRpcConcurrencyGate({
+  maxActive: 8,
+  maxQueued: 32,
+  queueTimeoutMs: 5_000,
+});
+
+const boundedRpcFetch = createBoundedRpcFetch(fetch);
+
 const connection = new Connection(RPC_URL, {
   commitment: "confirmed",
-  fetch: createBoundedRpcFetch(fetch),
+  fetch: (input, init) =>
+    rpcConcurrencyGate.run(() => boundedRpcFetch(input, init), init?.signal),
   disableRetryOnRateLimit: true,
 });
 
@@ -447,6 +457,10 @@ async function main(): Promise<void> {
     const shutdown = (signal: string): void => {
       if (shuttingDown) return;
       shuttingDown = true;
+
+      // Reject waiting RPC work and prevent new RPC operations.
+      // Already-active RPC operations retain their transport deadline.
+      rpcConcurrencyGate.close(new Error("API server shutting down"));
 
       console.log(`Received ${signal}; shutting down API`);
 

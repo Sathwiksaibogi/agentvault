@@ -65,7 +65,37 @@ export function createBoundedRpcFetch(
 
       try {
         for (;;) {
-          const { done, value } = await reader.read();
+          if (controller.signal.aborted) {
+            throw controller.signal.reason ?? new Error("RPC request aborted");
+          }
+
+          let onAbort!: () => void;
+
+          const aborted = new Promise<never>((_resolve, reject) => {
+            onAbort = () => {
+              reject(
+                controller.signal.reason ?? new Error("RPC request aborted")
+              );
+            };
+
+            controller.signal.addEventListener("abort", onAbort, {
+              once: true,
+            });
+
+            if (controller.signal.aborted) {
+              onAbort();
+            }
+          });
+
+          let result: ReadableStreamReadResult<Uint8Array>;
+
+          try {
+            result = await Promise.race([reader.read(), aborted]);
+          } finally {
+            controller.signal.removeEventListener("abort", onAbort);
+          }
+
+          const { done, value } = result;
 
           if (done) {
             completed = true;
