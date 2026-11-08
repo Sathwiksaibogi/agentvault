@@ -52,4 +52,8 @@ pub mod agentvault {
     pub fn revoke_task(ctx: Context<RevokeTask>) -> Result<()> {
         instructions::revoke_task::handler(ctx)
     }
+
+    pub fn set_vault_paused(ctx: Context<SetVaultPaused>, paused: bool) -> Result<()> {
+        instructions::set_vault_paused::handler(ctx, paused)
+    }
 }
