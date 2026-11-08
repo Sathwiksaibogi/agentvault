@@ -60,4 +60,8 @@ pub mod agentvault {
     pub fn deactivate_agent(ctx: Context<DeactivateAgent>) -> Result<()> {
         instructions::deactivate_agent::handler(ctx)
     }
+
+    pub fn withdraw_unreserved(ctx: Context<WithdrawUnreserved>, amount: u64) -> Result<()> {
+        instructions::withdraw_unreserved::handler(ctx, amount)
+    }
 }

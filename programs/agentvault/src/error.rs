@@ -46,4 +46,10 @@ pub enum ErrorCode {
 
     #[msg("Payment exceeds the remaining task budget")]
     TaskBudgetExceeded,
+
+    #[msg("Withdrawal amount must be greater than zero")]
+    InvalidWithdrawalAmount,
+
+    #[msg("Treasury balance is lower than active reservations")]
+    TreasuryBelowReserved,
 }

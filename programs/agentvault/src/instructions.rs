@@ -9,6 +9,7 @@ pub mod initialize_vault;
 pub mod register_agent;
 pub mod revoke_task;
 pub mod set_vault_paused;
+pub mod withdraw_unreserved;
 
 pub use create_task::*;
 pub use deactivate_agent::*;
@@ -19,3 +20,4 @@ pub use initialize_vault::*;
 pub use register_agent::*;
 pub use revoke_task::*;
 pub use set_vault_paused::*;
+pub use withdraw_unreserved::*;
