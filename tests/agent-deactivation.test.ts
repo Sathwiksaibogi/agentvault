@@ -352,6 +352,66 @@ await program.methods
     );
     assert.strictEqual(unpausedVault.paused, false);
 
+    // An inactive agent must not receive new tasks.
+const blockedTaskId = new BN(99);
+
+const [blockedTaskPda] = PublicKey.findProgramAddressSync(
+  [
+    Buffer.from("task"),
+    agentPda.toBuffer(),
+    blockedTaskId.toArrayLike(Buffer, "le", 8),
+  ],
+  program.programId
+);
+
+const vaultBeforeBlockedTask = await program.account.vault.fetch(
+  vaultPda,
+  "confirmed"
+);
+
+await expectProgramError(
+  () =>
+    program.methods
+      .createTask(
+        blockedTaskId,
+        new BN(5_000),
+        recipient,
+        expiresAt
+      )
+      .accountsPartial({
+        owner,
+        vault: vaultPda,
+        agent: agentPda,
+        tokenMint,
+        treasury: treasuryAta,
+        task: blockedTaskPda,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc(rpcOptions),
+  /AgentInactive/
+);
+
+// Rejected task creation must not initialize the PDA.
+const blockedTaskAccount = await provider.connection.getAccountInfo(
+  blockedTaskPda,
+  "confirmed"
+);
+
+assert.strictEqual(blockedTaskAccount, null);
+
+// Existing reservations must remain untouched.
+const vaultAfterBlockedTask = await program.account.vault.fetch(
+  vaultPda,
+  "confirmed"
+);
+
+assert.ok(
+  vaultAfterBlockedTask.totalReserved.eq(
+    vaultBeforeBlockedTask.totalReserved
+  )
+);
+
     await expectProgramError(
       () =>
         program.methods
