@@ -17,6 +17,7 @@ import {
 getAccount,
 mintTo,
 getAssociatedTokenAddressSync,
+createAssociatedTokenAccountIdempotentInstruction,
 createAssociatedTokenAccountInstruction,
 ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
@@ -567,5 +568,438 @@ console.log("Confirmed payment:", paymentSignature);
     recipientFinal.amount,
     recipientBefore.amount + BigInt(paymentAmount.toString())
   );
+});
+it("blocks agent registration while paused and permits it after unpause", async () => {
+  const newAgent = Keypair.generate();
+
+  const [agentPda] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("agent"),
+      vaultPda.toBuffer(),
+      newAgent.publicKey.toBuffer(),
+    ],
+    program.programId
+  );
+
+  // Ensure the agent does not exist before registration.
+  const agentBefore = await provider.connection.getAccountInfo(
+    agentPda,
+    "confirmed"
+  );
+
+  assert.strictEqual(agentBefore, null);
+
+  const vaultBefore = await program.account.vault.fetch(
+    vaultPda,
+    "confirmed"
+  );
+
+  // Pause the vault.
+  await program.methods
+    .setVaultPaused(true)
+    .accountsPartial({ owner, vault: vaultPda })
+    .rpc({
+      commitment: "confirmed",
+      preflightCommitment: "confirmed",
+    });
+
+  const pausedVault = await program.account.vault.fetch(
+    vaultPda,
+    "confirmed"
+  );
+
+  assert.strictEqual(pausedVault.paused, true);
+
+  // Registration must fail specifically with VaultPaused.
+  await assert.rejects(
+    async () => {
+      await program.methods
+        .registerAgent(newAgent.publicKey)
+        .accountsPartial({
+          owner,
+          vault: vaultPda,
+          agent: agentPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc({
+          commitment: "confirmed",
+          preflightCommitment: "confirmed",
+        });
+    },
+    (error: any) => {
+      const details = [
+        error?.message ?? "",
+        error?.error?.errorCode?.code ?? "",
+        ...(error?.logs ?? []),
+        ...(error?.transactionLogs ?? []),
+      ].join("\n");
+
+      assert.match(details, /VaultPaused/);
+      return true;
+    }
+  );
+
+  // Rejected registration must not initialize the agent PDA.
+  const agentAfterRejection =
+    await provider.connection.getAccountInfo(
+      agentPda,
+      "confirmed"
+    );
+
+  assert.strictEqual(agentAfterRejection, null);
+
+  const vaultAfterRejection = await program.account.vault.fetch(
+    vaultPda,
+    "confirmed"
+  );
+
+  assert.strictEqual(vaultAfterRejection.paused, true);
+
+  assert.ok(
+    vaultAfterRejection.totalReserved.eq(
+      vaultBefore.totalReserved
+    )
+  );
+
+  // Unpause and verify the state transition.
+  await program.methods
+    .setVaultPaused(false)
+    .accountsPartial({ owner, vault: vaultPda })
+    .rpc({
+      commitment: "confirmed",
+      preflightCommitment: "confirmed",
+    });
+
+  const unpausedVault = await program.account.vault.fetch(
+    vaultPda,
+    "confirmed"
+  );
+
+  assert.strictEqual(unpausedVault.paused, false);
+
+  // The same registration must now succeed.
+  await program.methods
+    .registerAgent(newAgent.publicKey)
+    .accountsPartial({
+      owner,
+      vault: vaultPda,
+      agent: agentPda,
+      systemProgram: SystemProgram.programId,
+    })
+    .rpc({
+      commitment: "confirmed",
+      preflightCommitment: "confirmed",
+    });
+
+  const registeredAgent = await program.account.agent.fetch(
+    agentPda,
+    "confirmed"
+  );
+
+  assert.ok(registeredAgent.vault.equals(vaultPda));
+  assert.ok(registeredAgent.authority.equals(newAgent.publicKey));
+  assert.strictEqual(registeredAgent.active, true);
+});
+
+it("blocks task creation while paused without reserving funds, then resumes", async () => {
+  // Use a separate vault so this test does not depend on
+  // the financial state left by previous tests.
+  const isolatedVaultId = new BN(
+    Buffer.from(Keypair.generate().publicKey.toBytes().slice(0, 8)),
+    "le"
+  );
+
+  const agentSigner = Keypair.generate();
+  const recipient = Keypair.generate().publicKey;
+
+  const taskId = new BN(1);
+  const taskBudget = new BN(50_000);
+  const depositAmount = new BN(100_000);
+
+  const [isolatedVaultPda] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("vault"),
+      owner.toBuffer(),
+      isolatedVaultId.toArrayLike(Buffer, "le", 8),
+    ],
+    program.programId
+  );
+
+  const [agentPda] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("agent"),
+      isolatedVaultPda.toBuffer(),
+      agentSigner.publicKey.toBuffer(),
+    ],
+    program.programId
+  );
+
+  const [taskPda] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("task"),
+      agentPda.toBuffer(),
+      taskId.toArrayLike(Buffer, "le", 8),
+    ],
+    program.programId
+  );
+
+  const ownerAta = getAssociatedTokenAddressSync(
+    tokenMint,
+    owner,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+
+  const treasuryAta = getAssociatedTokenAddressSync(
+    tokenMint,
+    isolatedVaultPda,
+    true,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+
+  const rpcOptions = {
+    commitment: "confirmed" as const,
+    preflightCommitment: "confirmed" as const,
+  };
+
+  // Initialize an independent vault.
+  await program.methods
+    .initializeVault(isolatedVaultId)
+    .accountsPartial({
+      owner,
+      vault: isolatedVaultPda,
+      tokenMint,
+      systemProgram: SystemProgram.programId,
+    })
+    .rpc(rpcOptions);
+
+  // Create the owner and treasury token accounts.
+  await sendAndConfirmTransaction(
+    provider.connection,
+    new Transaction().add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        owner,
+        ownerAta,
+        owner,
+        tokenMint,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      ),
+      createAssociatedTokenAccountIdempotentInstruction(
+        owner,
+        treasuryAta,
+        isolatedVaultPda,
+        tokenMint,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    ),
+    [payer],
+    { commitment: "confirmed" }
+  );
+
+  // Fund the treasury.
+  await mintTo(
+    provider.connection,
+    payer,
+    tokenMint,
+    ownerAta,
+    payer,
+    Number(depositAmount.toString()),
+    [],
+    { commitment: "confirmed" },
+    TOKEN_PROGRAM_ID
+  );
+
+  await program.methods
+    .depositTokens(depositAmount)
+    .accountsPartial({
+      owner,
+      vault: isolatedVaultPda,
+      tokenMint,
+      ownerTokenAccount: ownerAta,
+      treasury: treasuryAta,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .rpc(rpcOptions);
+
+  // Register the agent before pausing.
+  await program.methods
+    .registerAgent(agentSigner.publicKey)
+    .accountsPartial({
+      owner,
+      vault: isolatedVaultPda,
+      agent: agentPda,
+      systemProgram: SystemProgram.programId,
+    })
+    .rpc(rpcOptions);
+
+  // Use on-chain time to calculate task expiry.
+  const clockInfo = await provider.connection.getAccountInfo(
+    SYSVAR_CLOCK_PUBKEY,
+    "confirmed"
+  );
+
+  assert.ok(clockInfo);
+
+  const chainNow = Number(clockInfo.data.readBigInt64LE(32));
+  const expiresAt = new BN(chainNow + 3600);
+
+  // Verify the initial reservation state.
+  const vaultBefore = await program.account.vault.fetch(
+    isolatedVaultPda,
+    "confirmed"
+  );
+
+  const treasuryBefore = await getAccount(
+    provider.connection,
+    treasuryAta,
+    "confirmed",
+    TOKEN_PROGRAM_ID
+  );
+
+  assert.ok(vaultBefore.totalReserved.eq(new BN(0)));
+  assert.strictEqual(
+    treasuryBefore.amount,
+    BigInt(depositAmount.toString())
+  );
+
+  // Pause the vault.
+  await program.methods
+    .setVaultPaused(true)
+    .accountsPartial({
+      owner,
+      vault: isolatedVaultPda,
+    })
+    .rpc(rpcOptions);
+
+  const pausedVault = await program.account.vault.fetch(
+    isolatedVaultPda,
+    "confirmed"
+  );
+
+  assert.strictEqual(pausedVault.paused, true);
+
+  // Task creation must be rejected specifically with VaultPaused.
+  await assert.rejects(
+    async () => {
+      await program.methods
+        .createTask(taskId, taskBudget, recipient, expiresAt)
+        .accountsPartial({
+          owner,
+          vault: isolatedVaultPda,
+          agent: agentPda,
+          tokenMint,
+          treasury: treasuryAta,
+          task: taskPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc(rpcOptions);
+    },
+    (error: any) => {
+      const details = [
+        error?.message ?? "",
+        error?.error?.errorCode?.code ?? "",
+        ...(error?.logs ?? []),
+        ...(error?.transactionLogs ?? []),
+      ].join("\n");
+
+      assert.match(details, /VaultPaused/);
+      return true;
+    }
+  );
+
+  // A rejected task must not leave an initialized PDA.
+  const rejectedTask = await provider.connection.getAccountInfo(
+    taskPda,
+    "confirmed"
+  );
+
+  assert.strictEqual(rejectedTask, null);
+
+  const vaultAfterRejection = await program.account.vault.fetch(
+    isolatedVaultPda,
+    "confirmed"
+  );
+
+  const treasuryAfterRejection = await getAccount(
+    provider.connection,
+    treasuryAta,
+    "confirmed",
+    TOKEN_PROGRAM_ID
+  );
+
+  assert.strictEqual(vaultAfterRejection.paused, true);
+  assert.ok(
+    vaultAfterRejection.totalReserved.eq(vaultBefore.totalReserved)
+  );
+
+  assert.strictEqual(
+    treasuryAfterRejection.amount,
+    treasuryBefore.amount
+  );
+
+  // Unpause the vault.
+  await program.methods
+    .setVaultPaused(false)
+    .accountsPartial({
+      owner,
+      vault: isolatedVaultPda,
+    })
+    .rpc(rpcOptions);
+
+  const unpausedVault = await program.account.vault.fetch(
+    isolatedVaultPda,
+    "confirmed"
+  );
+
+  assert.strictEqual(unpausedVault.paused, false);
+
+  // The same task creation should now succeed.
+  await program.methods
+    .createTask(taskId, taskBudget, recipient, expiresAt)
+    .accountsPartial({
+      owner,
+      vault: isolatedVaultPda,
+      agent: agentPda,
+      tokenMint,
+      treasury: treasuryAta,
+      task: taskPda,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+    })
+    .rpc(rpcOptions);
+
+  const createdTask = await program.account.task.fetch(
+    taskPda,
+    "confirmed"
+  );
+
+  const vaultFinal = await program.account.vault.fetch(
+    isolatedVaultPda,
+    "confirmed"
+  );
+
+  const treasuryFinal = await getAccount(
+    provider.connection,
+    treasuryAta,
+    "confirmed",
+    TOKEN_PROGRAM_ID
+  );
+
+  assert.ok(createdTask.vault.equals(isolatedVaultPda));
+  assert.ok(createdTask.agent.equals(agentPda));
+  assert.ok(createdTask.recipient.equals(recipient));
+  assert.ok(createdTask.budget.eq(taskBudget));
+  assert.ok(createdTask.spent.eq(new BN(0)));
+  assert.strictEqual(createdTask.active, true);
+
+  // Task creation reserves funds but does not transfer them.
+  assert.ok(vaultFinal.totalReserved.eq(taskBudget));
+  assert.strictEqual(treasuryFinal.amount, treasuryBefore.amount);
+  assert.strictEqual(vaultFinal.paused, false);
 });
 });
