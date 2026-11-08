@@ -1,6 +1,7 @@
 #![allow(ambiguous_glob_reexports)]
 
 pub mod create_task;
+pub mod deactivate_agent;
 pub mod deposit_tokens;
 pub mod execute_task_payment;
 pub mod initialize_treasury;
@@ -10,6 +11,7 @@ pub mod revoke_task;
 pub mod set_vault_paused;
 
 pub use create_task::*;
+pub use deactivate_agent::*;
 pub use deposit_tokens::*;
 pub use execute_task_payment::*;
 pub use initialize_treasury::*;

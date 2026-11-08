@@ -56,4 +56,8 @@ pub mod agentvault {
     pub fn set_vault_paused(ctx: Context<SetVaultPaused>, paused: bool) -> Result<()> {
         instructions::set_vault_paused::handler(ctx, paused)
     }
+
+    pub fn deactivate_agent(ctx: Context<DeactivateAgent>) -> Result<()> {
+        instructions::deactivate_agent::handler(ctx)
+    }
 }
