@@ -6,7 +6,7 @@ import {
   PublicKey,
   SYSVAR_INSTRUCTIONS_PUBKEY,
   Transaction,
-  type TransactionInstruction,
+  TransactionInstruction,
 } from "@solana/web3.js";
 
 import {
@@ -63,7 +63,10 @@ function equalInstruction(
   }
 }
 
-function canonicalInstructions(expected: ExpectedModelBPayment) {
+function canonicalInstructions(
+  expected: ExpectedModelBPayment,
+  serialized = false
+) {
   const { binding, paymentInstruction } = expected;
 
   // Verifies both signed approvals, their scopes, PDAs,
@@ -132,12 +135,31 @@ function canonicalInstructions(expected: ExpectedModelBPayment) {
     const actual = paymentInstruction.keys[i];
 
     assert.ok(actual.pubkey.equals(pubkey), `Model B account ${i} mismatch`);
-    assert.equal(actual.isSigner, isSigner, `Model B signer ${i} mismatch`);
-    assert.equal(
-      actual.isWritable,
+
+    // Original instructions must retain exact permissions.
+    // Deserialized instructions can contain permissions
+    // promoted by Solana's transaction message compiler.
+    if (!serialized) {
+      assert.equal(actual.isSigner, isSigner, `Model B signer ${i} mismatch`);
+
+      assert.equal(
+        actual.isWritable,
+        isWritable,
+        `Model B writable ${i} mismatch`
+      );
+    }
+  });
+
+  // Rebuild the canonical account metas from trusted
+  // approval and PDA data, never from normalized flags.
+  const normalizedPaymentInstruction = new TransactionInstruction({
+    programId: AGENTVAULT_PROGRAM_ID,
+    data: Buffer.from(paymentInstruction.data),
+    keys: metas.map(([pubkey, isSigner, isWritable]) => ({
+      pubkey,
+      isSigner,
       isWritable,
-      `Model B writable ${i} mismatch`
-    );
+    })),
   });
 
   const ataInstruction = createAssociatedTokenAccountIdempotentInstruction(
@@ -151,7 +173,11 @@ function canonicalInstructions(expected: ExpectedModelBPayment) {
 
   return {
     authority,
-    instructions: [ataInstruction, ed25519Instruction, paymentInstruction],
+    instructions: [
+      ataInstruction,
+      ed25519Instruction,
+      serialized ? normalizedPaymentInstruction : paymentInstruction,
+    ],
   };
 }
 
@@ -160,6 +186,13 @@ export function assertModelBPaymentInstructions(
   transaction: Transaction,
   expected: ExpectedModelBPayment
 ): void {
+  // Check length BEFORE accessing instruction[2].
+  assert.equal(
+    transaction.instructions.length,
+    3,
+    "Model B requires exactly three instructions"
+  );
+
   const canonical = canonicalInstructions(expected);
 
   assert.ok(
@@ -216,7 +249,7 @@ export function assertSerializedModelBPayment(
   transaction: Transaction,
   expected: ExpectedModelBPayment
 ): void {
-  const canonical = canonicalInstructions(expected);
+  const canonical = canonicalInstructions(expected, true);
 
   assert.ok(transaction.recentBlockhash, "Missing blockhash");
   assert.ok(
@@ -229,7 +262,10 @@ export function assertSerializedModelBPayment(
     recentBlockhash: transaction.recentBlockhash,
   }).add(...canonical.instructions);
 
-  assertModelBPaymentInstructions(reconstructed, expected);
+  assertModelBPaymentInstructions(reconstructed, {
+    ...expected,
+    paymentInstruction: canonical.instructions[2],
+  });
 
   assert.ok(
     Buffer.from(transaction.serializeMessage()).equals(
