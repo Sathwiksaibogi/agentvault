@@ -52,4 +52,7 @@ pub enum ErrorCode {
 
     #[msg("Treasury balance is lower than active reservations")]
     TreasuryBelowReserved,
+
+    #[msg("Invalid owner approval chain scope")]
+    InvalidApprovalScope,
 }

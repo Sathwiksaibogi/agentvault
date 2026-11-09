@@ -64,4 +64,26 @@ pub mod agentvault {
     pub fn withdraw_unreserved(ctx: Context<WithdrawUnreserved>, amount: u64) -> Result<()> {
         instructions::withdraw_unreserved::handler(ctx, amount)
     }
+
+    pub fn create_approved_task(
+        ctx: Context<CreateApprovedTask>,
+        task_id: u64,
+        budget: u64,
+        recipient: Pubkey,
+        expires_at: i64,
+        genesis_hash: Pubkey,
+    ) -> Result<()> {
+        instructions::create_approved_task::handler(
+            ctx,
+            task_id,
+            budget,
+            recipient,
+            expires_at,
+            genesis_hash,
+        )
+    }
+
+    pub fn revoke_approved_task(ctx: Context<RevokeApprovedTask>) -> Result<()> {
+        instructions::revoke_approved_task::handler(ctx)
+    }
 }
