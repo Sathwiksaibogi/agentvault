@@ -6,7 +6,12 @@ import test from "node:test";
 import * as nacl from "tweetnacl";
 import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 
-import { encodeWorkflow, type WorkflowApproval } from "./signed-workflow";
+import { encodeWorkflow, workflowApprovalSchema } from "./signed-workflow";
+import {
+  encodeWorkflowV2,
+  type WorkflowApprovalV2,
+} from "./signed-workflow-v2";
+import { computeModelBWorkflowDigest } from "./model-b-workflow-digest";
 import { claimApprovedWorkflow } from "./request-journal";
 import { prepareSignedPayment } from "./prepared-payment";
 import {
@@ -22,7 +27,8 @@ import {
 function fixture(): {
   binding: ModelBWorkflowBinding;
   signPayment: (approval: PaymentApprovalV2) => string;
-  signWorkflow: (workflow: WorkflowApproval) => string;
+  signWorkflow: (workflow: WorkflowApprovalV2) => string;
+  owner: Keypair;
 } {
   const owner = Keypair.generate();
   const key = () => Keypair.generate().publicKey;
@@ -40,8 +46,9 @@ function fixture(): {
     programId
   );
   const nowUnix = 1_800_000_000;
-  const workflow: WorkflowApproval = {
-    version: 1,
+  const workflow: WorkflowApprovalV2 = {
+    version: 2,
+    authorizationModel: "model-b",
     network: "devnet",
     requestId: "modelb-journal-001",
     genesisHash: key().toBase58(),
@@ -58,9 +65,9 @@ function fixture(): {
     expiresAtUnix: nowUnix + 3_600,
     description: "Owner approved compute resource purchase",
   };
-  const signWorkflow = (value: WorkflowApproval) =>
+  const signWorkflow = (value: WorkflowApprovalV2) =>
     Buffer.from(
-      nacl.sign.detached(encodeWorkflow(value), owner.secretKey)
+      nacl.sign.detached(encodeWorkflowV2(value), owner.secretKey)
     ).toString("base64");
   const paymentApproval: PaymentApprovalV2 = {
     version: 2,
@@ -104,6 +111,28 @@ function fixture(): {
     },
     signPayment,
     signWorkflow,
+    owner,
+  };
+}
+
+function signLegacyModelAWorkflow(
+  binding: ModelBWorkflowBinding,
+  owner: Keypair
+) {
+  const v2 = (binding.signedWorkflow as { workflow: WorkflowApprovalV2 })
+    .workflow;
+
+  const fields = { ...v2 } as Record<string, unknown>;
+  delete fields.authorizationModel;
+  fields.version = 1;
+
+  const workflow = workflowApprovalSchema.parse(fields);
+
+  return {
+    workflow,
+    signature: Buffer.from(
+      nacl.sign.detached(encodeWorkflow(workflow), owner.secretKey)
+    ).toString("base64"),
   };
 }
 
@@ -117,7 +146,7 @@ function inTemporaryJournal(fn: (runtimeDir: string) => void): void {
 }
 
 function verify(runtimeDir: string, binding: ModelBWorkflowBinding) {
-  const signed = binding.signedWorkflow as { workflow: WorkflowApproval };
+  const signed = binding.signedWorkflow as { workflow: WorkflowApprovalV2 };
   return verifyModelBJournalClaim(
     runtimeDir,
     signed.workflow.requestId,
@@ -135,6 +164,10 @@ test("claims a versioned Model B journal with both approval digests", () => {
     assert.equal(record.version, 2);
     assert.equal(record.authorizationModel, "model-b");
     assert.match(record.workflowApprovalDigest, /^[0-9a-f]{64}$/);
+    assert.equal(
+      record.workflowApprovalDigest,
+      computeModelBWorkflowDigest(binding.signedWorkflow)
+    );
     assert.match(record.paymentApprovalDigest, /^[0-9a-f]{64}$/);
     assert.notEqual(
       record.workflowApprovalDigest,
@@ -165,8 +198,9 @@ test("rejects a forged v2 signature before writing a claim", () => {
       () => claimModelBWorkflow(dir, { ...binding, signatureBase64: forged }),
       /Invalid Model B owner signature/
     );
-    const workflow = (binding.signedWorkflow as { workflow: WorkflowApproval })
-      .workflow;
+    const workflow = (
+      binding.signedWorkflow as { workflow: WorkflowApprovalV2 }
+    ).workflow;
     assert.equal(
       existsSync(join(dir, "journal", `${workflow.requestId}.json`)),
       false
@@ -194,11 +228,11 @@ test("rejects a different, valid v2 signature during recovery inspection", () =>
   });
 });
 
-test("rejects a different, valid v1 workflow during recovery inspection", () => {
+test("rejects a different, valid v2 workflow during recovery inspection", () => {
   inTemporaryJournal((dir) => {
     const { binding, signWorkflow } = fixture();
     claimModelBWorkflow(dir, binding);
-    const signed = binding.signedWorkflow as { workflow: WorkflowApproval };
+    const signed = binding.signedWorkflow as { workflow: WorkflowApprovalV2 };
     const changed = {
       ...signed.workflow,
       description: "A new, separately signed description",
@@ -233,14 +267,34 @@ test("verifies historical claim without reading current task nonce", () => {
 
 test("a Model A claim locks the same request ID against Model B", () => {
   inTemporaryJournal((dir) => {
-    const { binding } = fixture();
-    claimApprovedWorkflow(
-      dir,
-      binding.signedWorkflow,
-      binding.scope,
-      binding.nowUnix
-    );
+    const { binding, owner } = fixture();
+    const signedLegacy = signLegacyModelAWorkflow(binding, owner);
+
+    claimApprovedWorkflow(dir, signedLegacy, binding.scope, binding.nowUnix);
+
     assert.throws(() => claimModelBWorkflow(dir, binding), /already claimed/);
+  });
+});
+
+test("rejects a valid signed v1 workflow before creating a Model B claim", () => {
+  inTemporaryJournal((dir) => {
+    const { binding, owner } = fixture();
+    const signedLegacy = signLegacyModelAWorkflow(binding, owner);
+
+    assert.throws(() =>
+      claimModelBWorkflow(dir, {
+        ...binding,
+        signedWorkflow: signedLegacy,
+      })
+    );
+
+    const v2 = (binding.signedWorkflow as { workflow: WorkflowApprovalV2 })
+      .workflow;
+
+    assert.equal(
+      existsSync(join(dir, "journal", `${v2.requestId}.json`)),
+      false
+    );
   });
 });
 

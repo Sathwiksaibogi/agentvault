@@ -11,7 +11,7 @@ import {
 import { join } from "node:path";
 import { PublicKey } from "@solana/web3.js";
 
-import { computeApprovalDigest } from "./request-journal";
+import { computeModelBWorkflowDigest } from "./model-b-workflow-digest";
 import {
   buildBoundModelBOwnerInstruction,
   type ModelBWorkflowBinding,
@@ -20,7 +20,8 @@ import {
   encodePaymentApprovalV2,
   paymentApprovalV2Schema,
 } from "./payment-approval-v2";
-import { signedWorkflowSchema, type ApprovalScope } from "./signed-workflow";
+import type { ApprovalScope } from "./signed-workflow";
+import { signedWorkflowV2Schema } from "./signed-workflow-v2";
 
 /** Model B claims live at the SAME request-id path as Model A claims. */
 export type ModelBJournalRecord = {
@@ -71,10 +72,10 @@ export function claimModelBWorkflow(
   runtimeDir: string,
   binding: ModelBWorkflowBinding
 ): { path: string; record: ModelBJournalRecord } {
-  // Verify the v1 workflow, v2 signature, PDAs, nonce and expiry FIRST.
+  // Verify workflow v2, payment v2, PDAs, nonce and expiry FIRST.
   buildBoundModelBOwnerInstruction(binding);
 
-  const signed = signedWorkflowSchema.parse(binding.signedWorkflow);
+  const signed = signedWorkflowV2Schema.parse(binding.signedWorkflow);
   const workflow = signed.workflow;
   const approval = paymentApprovalV2Schema.parse(binding.paymentApproval);
 
@@ -98,7 +99,7 @@ export function claimModelBWorkflow(
     nonce: approval.nonce,
     approvalExpiresAtUnix: approval.expiresAtUnix,
     taskExpiresAtUnix: binding.taskExpiresAtUnix,
-    workflowApprovalDigest: computeApprovalDigest(signed),
+    workflowApprovalDigest: computeModelBWorkflowDigest(signed),
     paymentApprovalDigest: computeModelBPaymentApprovalDigest(
       approval,
       binding.signatureBase64
@@ -168,12 +169,12 @@ export function verifyModelBJournalClaim(
   );
   const claimUnix = claimMillis / 1000;
 
-  const signed = signedWorkflowSchema.parse(signedWorkflowInput);
+  const signed = signedWorkflowV2Schema.parse(signedWorkflowInput);
   const workflow = signed.workflow;
   const approval = paymentApprovalV2Schema.parse(paymentApprovalInput);
 
   assert.equal(
-    computeApprovalDigest(signed),
+    computeModelBWorkflowDigest(signed),
     record.workflowApprovalDigest,
     "Model B workflow approval digest mismatch"
   );
@@ -183,7 +184,7 @@ export function verifyModelBJournalClaim(
     "Model B payment approval digest mismatch"
   );
 
-  // Reuse ALL v1-v2 binding and signature checks at the original claim time.
+  // Reuse both v2 signature and binding checks at the original claim time.
   // Do not compare to the current on-chain nonce: a confirmed payment advances it.
   buildBoundModelBOwnerInstruction({
     signedWorkflow: signed,

@@ -6,9 +6,13 @@ import { Ed25519Program, Keypair, PublicKey } from "@solana/web3.js";
 
 import {
   encodeWorkflow,
-  type WorkflowApproval,
+  workflowApprovalSchema,
   type ApprovalScope,
 } from "./signed-workflow";
+import {
+  encodeWorkflowV2,
+  type WorkflowApprovalV2,
+} from "./signed-workflow-v2";
 
 import {
   encodePaymentApprovalV2,
@@ -43,8 +47,9 @@ function fixture() {
 
   const nowUnix = 1_800_000_000;
 
-  const workflow: WorkflowApproval = {
-    version: 1,
+  const workflow: WorkflowApprovalV2 = {
+    version: 2,
+    authorizationModel: "model-b",
     network: "devnet",
     requestId: "modelb-binding-001",
     genesisHash: key(),
@@ -65,7 +70,7 @@ function fixture() {
   const signedWorkflow = {
     workflow,
     signature: Buffer.from(
-      nacl.sign.detached(encodeWorkflow(workflow), owner.secretKey)
+      nacl.sign.detached(encodeWorkflowV2(workflow), owner.secretKey)
     ).toString("base64"),
   };
 
@@ -116,7 +121,7 @@ function fixture() {
   return { binding, owner, signPayment };
 }
 
-test("accepts matching v1 workflow and v2 owner approval", () => {
+test("accepts signed workflow v2 and payment approval v2", () => {
   const { binding } = fixture();
 
   const ix = buildBoundModelBOwnerInstruction(binding);
@@ -185,7 +190,7 @@ test("rejects a Model B approval outliving the workflow", () => {
 
   const workflow = (
     binding.signedWorkflow as {
-      workflow: WorkflowApproval;
+      workflow: WorkflowApprovalV2;
     }
   ).workflow;
 
@@ -215,5 +220,32 @@ test("rejects an invalid owner signature", () => {
         signatureBase64: Buffer.alloc(64, 3).toString("base64"),
       }),
     /Invalid Model B owner signature/
+  );
+});
+
+test("rejects a valid signed v1 workflow on the Model B path", () => {
+  const { binding, owner } = fixture();
+
+  const v2 = (binding.signedWorkflow as { workflow: WorkflowApprovalV2 })
+    .workflow;
+
+  const fields = { ...v2 } as Record<string, unknown>;
+  delete fields.authorizationModel;
+  fields.version = 1;
+
+  const legacy = workflowApprovalSchema.parse(fields);
+
+  const signedLegacy = {
+    workflow: legacy,
+    signature: Buffer.from(
+      nacl.sign.detached(encodeWorkflow(legacy), owner.secretKey)
+    ).toString("base64"),
+  };
+
+  assert.throws(() =>
+    buildBoundModelBOwnerInstruction({
+      ...binding,
+      signedWorkflow: signedLegacy,
+    })
   );
 });

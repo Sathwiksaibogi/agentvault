@@ -28,7 +28,10 @@ import {
 } from "@solana/spl-token";
 
 import { AGENTVAULT_PROGRAM_ID } from "./payment-transaction-guard";
-import { encodeWorkflow, type WorkflowApproval } from "./signed-workflow";
+import {
+  encodeWorkflowV2,
+  type WorkflowApprovalV2,
+} from "./signed-workflow-v2";
 
 import {
   encodePaymentApprovalV2,
@@ -77,8 +80,9 @@ function fixture() {
 
   const nowUnix = 1_800_000_000;
 
-  const workflow: WorkflowApproval = {
-    version: 1,
+  const workflow: WorkflowApprovalV2 = {
+    version: 2,
+    authorizationModel: "model-b",
     network: "devnet",
     requestId: "modelb-persist-001",
     genesisHash: genesisHash.toBase58(),
@@ -96,9 +100,9 @@ function fixture() {
     description: "Owner-approved compute infrastructure purchase",
   };
 
-  const signWorkflow = (value: WorkflowApproval): string =>
+  const signWorkflow = (value: WorkflowApprovalV2): string =>
     Buffer.from(
-      nacl.sign.detached(encodeWorkflow(value), owner.secretKey)
+      nacl.sign.detached(encodeWorkflowV2(value), owner.secretKey)
     ).toString("base64");
 
   const paymentApproval: PaymentApprovalV2 = {
@@ -419,7 +423,7 @@ test("rejects a substituted signed workflow during restoration", () => {
 
     const original = (
       data.binding.signedWorkflow as {
-        workflow: WorkflowApproval;
+        workflow: WorkflowApprovalV2;
       }
     ).workflow;
 

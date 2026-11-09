@@ -2,7 +2,8 @@ import { PublicKey, type TransactionInstruction } from "@solana/web3.js";
 
 import { paymentApprovalV2Schema } from "./payment-approval-v2";
 
-import { verifyWorkflowApproval, type ApprovalScope } from "./signed-workflow";
+import type { ApprovalScope } from "./signed-workflow";
+import { verifyWorkflowApprovalV2 } from "./signed-workflow-v2";
 
 import { buildModelBOwnerVerificationInstruction } from "./model-b-ed25519";
 
@@ -23,8 +24,8 @@ export type ModelBWorkflowBinding = {
 export function buildBoundModelBOwnerInstruction(
   input: ModelBWorkflowBinding
 ): TransactionInstruction {
-  // Verify the existing v1 workflow signature first.
-  const workflow = verifyWorkflowApproval(
+  // Require a v2 owner signature explicitly authorizing Model B.
+  const workflow = verifyWorkflowApprovalV2(
     input.signedWorkflow,
     input.scope,
     input.nowUnix
@@ -36,7 +37,7 @@ export function buildBoundModelBOwnerInstruction(
   const vault = new PublicKey(workflow.vault);
   const authority = new PublicKey(workflow.agentAuthority);
 
-  // Derive the expected agent PDA from signed v1 fields.
+  // Derive the agent PDA from authenticated workflow v2 fields.
   const [expectedAgent] = PublicKey.findProgramAddressSync(
     [Buffer.from("agent"), vault.toBuffer(), authority.toBuffer()],
     programId

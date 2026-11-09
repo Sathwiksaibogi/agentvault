@@ -12,7 +12,7 @@ import { loadPreparedPayment } from "./prepared-payment";
 import { loadPreparedModelBPayment } from "./model-b-prepared-payment";
 import { recoveryModeFromClaim } from "./payment-recovery-mode";
 import { AGENTVAULT_PROGRAM_ID } from "./payment-transaction-guard";
-import { signedWorkflowSchema } from "./signed-workflow";
+import { signedWorkflowV2Schema } from "./signed-workflow-v2";
 
 type RecoveryState = {
   genesisHash: string;
@@ -74,7 +74,7 @@ async function main() {
 
           assert.equal(claim.mint, state.mint, "Model B mint mismatch");
 
-          const signedWorkflow = signedWorkflowSchema.parse(
+          const signedWorkflow = signedWorkflowV2Schema.parse(
             JSON.parse(
               readFileSync(
                 join(RUNTIME_DIR, "approvals", `${requestId}.json`),

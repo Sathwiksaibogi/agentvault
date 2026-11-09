@@ -19,7 +19,10 @@ import {
 } from "@solana/spl-token";
 
 import { AGENTVAULT_PROGRAM_ID } from "./payment-transaction-guard";
-import { encodeWorkflow, type WorkflowApproval } from "./signed-workflow";
+import {
+  encodeWorkflowV2,
+  type WorkflowApprovalV2,
+} from "./signed-workflow-v2";
 import {
   encodePaymentApprovalV2,
   type PaymentApprovalV2,
@@ -54,8 +57,9 @@ function fixture() {
 
   const nowUnix = 1_800_000_000;
 
-  const workflow: WorkflowApproval = {
-    version: 1,
+  const workflow: WorkflowApprovalV2 = {
+    version: 2,
+    authorizationModel: "model-b",
     network: "devnet",
     requestId: "modelb-guard-001",
     genesisHash: genesisHash.toBase58(),
@@ -76,7 +80,7 @@ function fixture() {
   const signedWorkflow = {
     workflow,
     signature: Buffer.from(
-      nacl.sign.detached(encodeWorkflow(workflow), owner.secretKey)
+      nacl.sign.detached(encodeWorkflowV2(workflow), owner.secretKey)
     ).toString("base64"),
   };
 
