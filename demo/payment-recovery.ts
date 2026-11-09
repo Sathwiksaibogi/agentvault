@@ -33,6 +33,7 @@ async function main() {
     readFileSync(join(RUNTIME_DIR, "journal", `${requestId}.json`), "utf8")
   ) as RequestJournalRecord;
 
+  assert.strictEqual(claim.version, 1, "Model B recovery is not yet enabled");
   assert.strictEqual(record.network, NETWORK);
   assert.strictEqual(claim.network, NETWORK);
   assert.strictEqual(claim.genesisHash, state.genesisHash);

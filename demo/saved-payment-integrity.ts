@@ -56,20 +56,19 @@ export async function verifySavedPaymentIntegrity(
 
   const signedApproval = signedWorkflowSchema.parse(
     JSON.parse(
-      readFileSync(
-        join(runtimeDir, "approvals", `${requestId}.json`),
-        "utf8"
-      )
+      readFileSync(join(runtimeDir, "approvals", `${requestId}.json`), "utf8")
     )
   );
 
   const claim = JSON.parse(
-    readFileSync(
-      join(runtimeDir, "journal", `${requestId}.json`),
-      "utf8"
-    )
+    readFileSync(join(runtimeDir, "journal", `${requestId}.json`), "utf8")
   );
 
+  assert.strictEqual(
+    claim.version,
+    1,
+    "Model B requires separate v2 recovery verification"
+  );
   assert.strictEqual(claim.status, "claimed");
   assert.strictEqual(claim.requestId, requestId);
   assert.strictEqual(claim.network, state.network);
@@ -78,14 +77,9 @@ export async function verifySavedPaymentIntegrity(
   assert.strictEqual(claim.owner, state.owner);
 
   // Bind the current approval file to the original claim.
-  assertApprovalDigestMatchesJournal(
-    signedApproval,
-    claim.approvalDigest
-  );
+  assertApprovalDigestMatchesJournal(signedApproval, claim.approvalDigest);
 
-  const claimTime = Math.floor(
-    Date.parse(claim.claimedAt) / 1000
-  );
+  const claimTime = Math.floor(Date.parse(claim.claimedAt) / 1000);
 
   assert.ok(
     Number.isSafeInteger(claimTime) && claimTime > 0,
@@ -94,41 +88,19 @@ export async function verifySavedPaymentIntegrity(
 
   // Historical verification: an approval may have
   // expired after the payment was originally claimed.
-  const workflow = verifyWorkflowApproval(
-    signedApproval,
-    state,
-    claimTime
-  );
+  const workflow = verifyWorkflowApproval(signedApproval, state, claimTime);
 
   assert.strictEqual(workflow.requestId, requestId);
   assert.strictEqual(claim.agent, workflow.assignedAgent);
-  assert.strictEqual(
-    claim.recipient,
-    workflow.recipient
-  );
-  assert.strictEqual(
-    claim.amountBaseUnits,
-    workflow.amountBaseUnits
-  );
+  assert.strictEqual(claim.recipient, workflow.recipient);
+  assert.strictEqual(claim.amountBaseUnits, workflow.amountBaseUnits);
 
-  const { record, transaction } = loadPreparedPayment(
-    runtimeDir,
-    requestId
-  );
+  const { record, transaction } = loadPreparedPayment(runtimeDir, requestId);
 
   assert.strictEqual(record.network, state.network);
-  assert.strictEqual(
-    record.agentAuthority,
-    workflow.agentAuthority
-  );
-  assert.strictEqual(
-    record.agent,
-    workflow.assignedAgent
-  );
-  assert.strictEqual(
-    record.amountBaseUnits,
-    workflow.amountBaseUnits
-  );
+  assert.strictEqual(record.agentAuthority, workflow.agentAuthority);
+  assert.strictEqual(record.agent, workflow.assignedAgent);
+  assert.strictEqual(record.amountBaseUnits, workflow.amountBaseUnits);
 
   const vault = new PublicKey(state.vault);
   const mint = new PublicKey(state.mint);
@@ -137,11 +109,7 @@ export async function verifySavedPaymentIntegrity(
   const recipient = new PublicKey(workflow.recipient);
 
   const [agentPda] = PublicKey.findProgramAddressSync(
-    [
-      Buffer.from("agent"),
-      vault.toBuffer(),
-      authority.toBuffer(),
-    ],
+    [Buffer.from("agent"), vault.toBuffer(), authority.toBuffer()],
     program.programId
   );
 
@@ -171,10 +139,7 @@ export async function verifySavedPaymentIntegrity(
   );
 
   const paymentInstruction = await program.methods
-    .executeTaskPayment(
-      new BN(workflow.amountBaseUnits),
-      new BN(record.nonce)
-    )
+    .executeTaskPayment(new BN(workflow.amountBaseUnits), new BN(record.nonce))
     .accountsPartial({
       agentAuthority: authority,
       vault,
