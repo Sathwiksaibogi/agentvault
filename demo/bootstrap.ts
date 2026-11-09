@@ -14,6 +14,7 @@ import {
   getAccount,
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountIdempotentInstruction,
+  getMint,
   mintTo,
 } from "@solana/spl-token";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -123,6 +124,31 @@ async function main() {
 
   assert.ok(mintInfo, "Saved mint does not exist. Was the validator reset?");
 
+  // Verify the controlled local-demo mint.
+  const demoMint = await getMint(
+    connection,
+    mint,
+    "confirmed",
+    TOKEN_PROGRAM_ID
+  );
+
+  assert.ok(demoMint.isInitialized, "Demo mint is not initialized");
+
+  assert.strictEqual(demoMint.decimals, 6, "Unexpected demo mint decimals");
+
+  assert.ok(
+    demoMint.mintAuthority?.equals(owner),
+    "Unexpected demo mint authority"
+  );
+
+  assert.strictEqual(
+    demoMint.freezeAuthority,
+    null,
+    "Demo mint must not have a freeze authority"
+  );
+
+  console.log("Demo mint security policy verified.");
+
   async function ensureTokenAta(
     tokenOwner: PublicKey,
     allowOwnerOffCurve: boolean,
@@ -179,6 +205,8 @@ async function main() {
     assert.ok(account.mint.equals(mint), `${label}: unexpected token mint`);
 
     assert.ok(account.isInitialized, `${label}: token account not initialized`);
+
+    assert.ok(!account.isFrozen, `${label}: token account is frozen`);
 
     console.log(`${label} ATA ready:`, ata.toBase58());
 
