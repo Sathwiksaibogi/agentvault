@@ -7,8 +7,20 @@ import { Connection } from "@solana/web3.js";
 import bs58 from "bs58";
 
 import { NETWORK, RPC_URL, RUNTIME_DIR } from "./runtime-config";
+
 import { loadPreparedPayment } from "./prepared-payment";
-import type { RequestJournalRecord } from "./request-journal";
+import { loadPreparedModelBPayment } from "./model-b-prepared-payment";
+import { recoveryModeFromClaim } from "./payment-recovery-mode";
+import { AGENTVAULT_PROGRAM_ID } from "./payment-transaction-guard";
+import { signedWorkflowSchema } from "./signed-workflow";
+
+type RecoveryState = {
+  genesisHash: string;
+  vault: string;
+  owner: string;
+  mint?: string;
+  programId?: string;
+};
 
 async function main() {
   const requestId = process.argv[2];
@@ -18,48 +30,103 @@ async function main() {
     "Usage: payment-recovery.ts <request-id>"
   );
 
-  // Load the exact previously signed transaction.
-  // This verifies its digest and cryptographic signature.
-  const { record, transaction, raw } = loadPreparedPayment(
-    RUNTIME_DIR,
-    requestId
+  // 1. Determine authorization model BEFORE loading
+  // either model's saved transaction.
+  const claim = JSON.parse(
+    readFileSync(join(RUNTIME_DIR, "journal", `${requestId}.json`), "utf8")
   );
+
+  const mode = recoveryModeFromClaim(claim, requestId);
 
   const state = JSON.parse(
     readFileSync(join(RUNTIME_DIR, "state.json"), "utf8")
-  );
+  ) as RecoveryState;
 
-  const claim = JSON.parse(
-    readFileSync(join(RUNTIME_DIR, "journal", `${requestId}.json`), "utf8")
-  ) as RequestJournalRecord;
+  assert.equal(claim.network, NETWORK);
+  assert.equal(claim.genesisHash, state.genesisHash);
+  assert.equal(claim.vault, state.vault);
+  assert.equal(claim.owner, state.owner);
 
-  assert.strictEqual(claim.version, 1, "Model B recovery is not yet enabled");
-  assert.strictEqual(record.network, NETWORK);
-  assert.strictEqual(claim.network, NETWORK);
-  assert.strictEqual(claim.genesisHash, state.genesisHash);
-  assert.strictEqual(claim.vault, state.vault);
-  assert.strictEqual(claim.owner, state.owner);
+  if (state.programId !== undefined) {
+    assert.equal(
+      state.programId,
+      AGENTVAULT_PROGRAM_ID.toBase58(),
+      "Configured program ID mismatch"
+    );
+  }
 
-  // Compare the saved transaction signature with its
-  // restored signature before querying Solana.
+  // 2. Dispatch to exactly one persistence verifier.
+  // Model B never falls back to Model A.
+  const prepared =
+    mode === "model-a"
+      ? loadPreparedPayment(RUNTIME_DIR, requestId)
+      : (() => {
+          assert.ok(
+            typeof state.mint === "string",
+            "Model B recovery requires a configured mint"
+          );
+
+          assert.equal(
+            claim.programId,
+            AGENTVAULT_PROGRAM_ID.toBase58(),
+            "Model B program mismatch"
+          );
+
+          assert.equal(claim.mint, state.mint, "Model B mint mismatch");
+
+          const signedWorkflow = signedWorkflowSchema.parse(
+            JSON.parse(
+              readFileSync(
+                join(RUNTIME_DIR, "approvals", `${requestId}.json`),
+                "utf8"
+              )
+            )
+          );
+
+          return loadPreparedModelBPayment(
+            RUNTIME_DIR,
+            requestId,
+            signedWorkflow,
+            {
+              network: NETWORK,
+              genesisHash: state.genesisHash,
+              programId: AGENTVAULT_PROGRAM_ID.toBase58(),
+              vault: state.vault,
+              owner: state.owner,
+              mint: state.mint,
+            }
+          );
+        })();
+
+  const { record, transaction, raw } = prepared;
+
+  assert.equal(record.network, NETWORK);
   assert.ok(transaction.signature);
 
+  // Both loaders verify serialized bytes and agent
+  // signatures before returning.
   const signature = bs58.encode(transaction.signature);
 
-  assert.strictEqual(
+  const signatureBase64 =
+    record.version === 1
+      ? record.signatureBase64
+      : record.transactionSignatureBase64;
+
+  assert.equal(
     Buffer.from(transaction.signature).toString("base64"),
-    record.signatureBase64
+    signatureBase64,
+    "Recovered agent signature mismatch"
   );
 
+  // 3. Validate the RPC ledger before asking for status.
   const connection = new Connection(RPC_URL, "confirmed");
 
-  assert.strictEqual(
+  assert.equal(
     await connection.getGenesisHash(),
     state.genesisHash,
     "RPC belongs to the wrong ledger"
   );
 
-  // Search historical status as well as recent status.
   const statusResponse = await connection.getSignatureStatuses([signature], {
     searchTransactionHistory: true,
   });
@@ -76,8 +143,8 @@ async function main() {
 
   console.log("\n=== AGENTVAULT PAYMENT RECOVERY ===");
   console.log("Network:", NETWORK);
+  console.log("Authorization:", mode);
   console.log("Request:", requestId);
-  console.log("Agent:", record.agent);
   console.log("Signature:", signature);
   console.log("Amount:", record.amountBaseUnits);
   console.log("Nonce:", record.nonce);
@@ -101,7 +168,7 @@ async function main() {
       break;
 
     case "PENDING":
-      console.log("Blockhash remains valid. Preserve the exact signed bytes.");
+      console.log("Blockhash remains valid. Preserve exact signed bytes.");
       console.log(
         "Only the original transaction may be considered for rebroadcast."
       );
