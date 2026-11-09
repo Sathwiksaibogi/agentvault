@@ -384,6 +384,8 @@ export async function evaluateApprovedModelBWorkflow(requestId: string) {
     approvedTaskPda,
     recipient: new PublicKey(after.recipient),
     nonce: after.nextNonce,
+    policySnapshot: after,
+    readLivePolicy: inspectLivePolicy,
   };
 }
 
