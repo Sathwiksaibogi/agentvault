@@ -88,4 +88,20 @@ pub mod agentvault {
     pub fn revoke_approved_task(ctx: Context<RevokeApprovedTask>) -> Result<()> {
         instructions::revoke_approved_task::handler(ctx)
     }
+
+    pub fn execute_approved_payment(
+        ctx: Context<ExecuteApprovedPayment>,
+        amount: u64,
+        nonce: u64,
+        approval_expires_at: i64,
+        request_id_hash: [u8; 32],
+    ) -> Result<()> {
+        instructions::execute_approved_payment::handler(
+            ctx,
+            amount,
+            nonce,
+            approval_expires_at,
+            request_id_hash,
+        )
+    }
 }
