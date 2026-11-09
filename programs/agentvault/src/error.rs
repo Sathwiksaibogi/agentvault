@@ -55,4 +55,10 @@ pub enum ErrorCode {
 
     #[msg("Invalid owner approval chain scope")]
     InvalidApprovalScope,
+
+    #[msg("Missing preceding Ed25519 owner approval")]
+    MissingOwnerApproval,
+
+    #[msg("Invalid Ed25519 owner approval")]
+    InvalidOwnerApproval,
 }
