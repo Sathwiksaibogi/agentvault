@@ -1,6 +1,7 @@
 pub mod constants;
 pub mod error;
 pub mod instructions;
+pub mod payment_approval_v2;
 pub mod state;
 
 use anchor_lang::prelude::*;

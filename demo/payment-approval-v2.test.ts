@@ -4,6 +4,9 @@ import assert from "node:assert/strict";
 import { Keypair } from "@solana/web3.js";
 import * as nacl from "tweetnacl";
 
+import { createHash } from "node:crypto";
+import { PublicKey } from "@solana/web3.js";
+
 import {
   encodePaymentApprovalV2,
   verifyPaymentApprovalV2,
@@ -129,5 +132,34 @@ test("rejects unexpected approval fields", () => {
       ...approval,
       unexpectedField: "not signed",
     })
+  );
+});
+
+test("matches the fixed Rust v2 serialization vector", () => {
+  const key = (byte: number) =>
+    new PublicKey(new Uint8Array(32).fill(byte)).toBase58();
+
+  const message = encodePaymentApprovalV2({
+    version: 2,
+    genesisHash: key(1),
+    programId: key(2),
+    vault: key(3),
+    owner: key(4),
+    mint: key(5),
+    agent: key(6),
+    agentAuthority: key(7),
+    task: key(8),
+    recipient: key(9),
+    amountBaseUnits: "10000",
+    nonce: "7",
+    expiresAtUnix: "2000000000",
+    requestId: "procurement-001",
+  });
+
+  assert.equal(message.length, 375);
+
+  assert.equal(
+    createHash("sha256").update(message).digest("hex"),
+    "56b2c11912920eaa9f7156bd5e35cb8963dae1cebfefb5a9d9e23dc133f96721"
   );
 });
