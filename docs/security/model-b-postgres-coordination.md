@@ -16,7 +16,7 @@
 - PostgreSQL is now a *separate coordination foundation*; it is **not** integrated with Model A, the CLI journal, submission code, API, or the existing Devnet request IDs.
 - Migration must preserve existing Model A and B claims including unresolved state; never import a legacy request as a fresh unclaimed row.
 - Test real PostgreSQL under concurrent worker processes and independent database connections, process kill/fault injection, restart and backup/restore. The optional integration test only covers parallel connections, not independent machines.
-- Add a scoped, read-only chain reconciler that checks genesis, signature, transaction error, finalized/confirmed status and block height before status updates. A submitted-but-unobserved payment stays permanently non-retryable without an explicit separately reviewed recovery protocol.
+- The inactive 7.6C.4 inspector and 7.6C.5 reconciliation adapter now check genesis, signature, transaction error, finalized status and recorded finalized slot before terminal status updates. They still require release review and live-path integration. A submitted-but-unobserved payment stays non-retryable without an explicit separately reviewed recovery protocol.
 - Review statement timeouts, TLS, DB HA/failover semantics, privilege isolation, audit logging and backup encryption. Transaction signatures and bytes are sensitive operational artifacts even though they are not private keys.
 - A DB-based state machine does **not** guarantee exactly-once chain execution without additional end-to-end proof. The strict policy here is at-most-one submission *permit* per request in a healthy, correctly configured database.
 

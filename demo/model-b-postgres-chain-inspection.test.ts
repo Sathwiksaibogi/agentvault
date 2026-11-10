@@ -231,3 +231,17 @@ test("previously unresolved requests can be observed without resubmission", asyn
   assert.equal((await inspectModelBFinality(record, rpc)).status, "CONFIRMED");
   assert.ok(!calls.includes("send"));
 });
+
+test("malformed finalized RPC responses lacking error metadata stay unresolved", async () => {
+  const record = fixture();
+  const { rpc } = fakeRpc(record);
+  rpc.getSignatureStatuses = async () => ({
+    value: [{ confirmationStatus: "finalized", slot: 321, err: undefined }],
+  });
+  rpc.getTransaction = async () => ({
+    slot: 321,
+    transaction: { signatures: [record.signature!] },
+    meta: { err: undefined },
+  });
+  assert.equal((await inspectModelBFinality(record, rpc)).status, "UNRESOLVED");
+});

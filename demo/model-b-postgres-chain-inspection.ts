@@ -139,6 +139,12 @@ export async function inspectModelBFinality(
       "Transaction does not match finalized signature and slot"
     );
   }
+  // RPC error fields are required even for successful transactions (null).
+  // Missing fields from two malformed responses must NOT masquerade as
+  // matching finalized on-chain errors.
+  if (status.err === undefined || chainTx.meta.err === undefined) {
+    return unresolved(record, "Finalized error metadata is missing");
+  }
   // Different RPC endpoints/commitments must not supply contradictory errors.
   if (JSON.stringify(status.err) !== JSON.stringify(chainTx.meta.err)) {
     return unresolved(

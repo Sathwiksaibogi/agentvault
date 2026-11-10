@@ -9,7 +9,7 @@
 - Verify the RPC genesis hash before and after requesting evidence. The RPC provider remains a trusted operational dependency; two genesis checks are not independent consensus verification.
 - Request full signature history and a **finalized** transaction receipt, require exact signature and slot matching, and compare the transaction error with the signature status.
 - Return a terminal observation only for matching finalized evidence. Missing, processed-only, confirmed-only, inconsistent, and pruned records remain `UNRESOLVED` or error. Never infer failure from blockhash expiry or an RPC timeout.
-- This helper never calls the store's `recordChainStatus` method; a future separately reviewed reconciliation service must re-check claim identity, signature, and state transition before persisting an observation.
+- This helper never calls the store's `recordChainStatus` method; the separately added 7.6C.5 inactive reconciliation adapter re-checks claim identity, signature, and state transition before persisting an observation. It is not approved for live use.
 - This is a **read-only observation tool**, not a relayer or retry mechanism. Even a failed original signature does not by itself authorize a replacement payment or a reused request ID.
 
 ## Next integration gates

@@ -42,6 +42,9 @@ export type ModelBPaymentRecord = ClaimModelBPayment & {
   signedTransactionSha256: string | null;
   signature: string | null;
   lastValidBlockHeight: number | null;
+  /** Available from getForReconciliation() after the additive finality migration. */
+  finalizedSlot?: number | null;
+  finalityObservedAt?: Date | null;
 };
 
 type DbRow = {
@@ -56,12 +59,17 @@ type DbRow = {
   signed_tx_sha256: string | null;
   tx_signature: string | null;
   last_valid_block_height: string | number | null;
+  finalized_slot?: string | number | null;
+  finality_observed_at?: Date | null;
 };
 
 const RESULT_FIELDS = `
   request_id, genesis_hash, program_id, vault, workflow_digest, payment_digest,
   phase, signed_tx_bytes, signed_tx_sha256, tx_signature, last_valid_block_height
 `;
+
+// Only for the additive 7.6C.5 migration; earlier stores need not have columns.
+const FINALITY_RESULT_FIELDS = `${RESULT_FIELDS}, finalized_slot, finality_observed_at`;
 
 function assertRequestId(requestId: string): void {
   if (!/^[A-Za-z0-9_-]{8,64}$/.test(requestId)) {
@@ -172,6 +180,26 @@ function rowToRecord(row: DbRow): ModelBPaymentRecord {
       throw new Error("Corrupt stored signed transaction digest");
     }
   }
+  const hasFinalityColumns = Object.prototype.hasOwnProperty.call(
+    row,
+    "finalized_slot"
+  );
+  const finalizedSlot =
+    row.finalized_slot === null || row.finalized_slot === undefined
+      ? null
+      : Number(row.finalized_slot);
+  if (
+    hasFinalityColumns &&
+    ((finalizedSlot !== null &&
+      (!Number.isSafeInteger(finalizedSlot) || finalizedSlot < 0)) ||
+      (row.phase === "CONFIRMED" || row.phase === "FAILED") !==
+        (finalizedSlot !== null) ||
+      (finalizedSlot !== null) !==
+        (row.finality_observed_at instanceof Date &&
+          Number.isFinite(row.finality_observed_at.getTime())))
+  ) {
+    throw new Error("Invalid finalized payment evidence from PostgreSQL");
+  }
   return {
     requestId: row.request_id,
     genesisHash: row.genesis_hash,
@@ -186,6 +214,12 @@ function rowToRecord(row: DbRow): ModelBPaymentRecord {
     signedTransactionSha256: row.signed_tx_sha256,
     signature: row.tx_signature,
     lastValidBlockHeight: height,
+    ...(hasFinalityColumns
+      ? {
+          finalizedSlot,
+          finalityObservedAt: row.finality_observed_at ?? null,
+        }
+      : {}),
   };
 }
 
@@ -262,7 +296,12 @@ export class PostgresModelBPaymentStore {
     return rowToRecord(result.rows[0]);
   }
 
-  /** Only read-only reconciliation may call this with a verified chain result. */
+  /**
+   * LEGACY/INACTIVE low-level API. Never call from the production runtime.
+   * The 7.6C.5 migration blocks terminal transitions without finality evidence.
+   * Use reconcileModelBPayment() instead.
+   * @deprecated
+   */
   async recordChainStatus(
     requestId: string,
     signature: string,
@@ -294,5 +333,107 @@ export class PostgresModelBPaymentStore {
       [requestId]
     );
     return result.rows[0] ? rowToRecord(result.rows[0]) : null;
+  }
+
+  /**
+   * Read using the additive 7.6C.5 finality schema. This cannot submit any
+   * transaction and must not be used before the migration is applied.
+   */
+  async getForReconciliation(
+    requestId: string
+  ): Promise<ModelBPaymentRecord | null> {
+    assertRequestId(requestId);
+    const result = await this.db.query<DbRow>(
+      `SELECT ${FINALITY_RESULT_FIELDS}
+       FROM agentvault_model_b_payment_requests WHERE request_id = $1`,
+      [requestId]
+    );
+    return result.rows[0] ? rowToRecord(result.rows[0]) : null;
+  }
+
+  /**
+   * Internal CAS used ONLY after inspectModelBFinality() in the trusted
+   * reconciliation service. It rejects stale identity/signed-byte snapshots.
+   * Passing a status directly here is NOT a substitute for chain inspection.
+   * The additive SQL constraint enforces that terminal writes have slot evidence.
+   * NEVER use this to authorize a new submission.
+   */
+  async applyInspectedStatus(
+    expected: ModelBPaymentRecord,
+    observation: {
+      status: "UNRESOLVED" | "CONFIRMED" | "FAILED";
+      requestId: string;
+      signature: string;
+      finalizedSlot?: number;
+    }
+  ): Promise<ModelBPaymentRecord | null> {
+    validatePaymentClaim(expected);
+    if (
+      !["SUBMISSION_RESERVED", "UNRESOLVED"].includes(expected.phase) ||
+      !expected.signature ||
+      !expected.signedTransaction ||
+      expected.signedTransactionSha256 === null ||
+      expected.lastValidBlockHeight === null
+    ) {
+      throw new Error("Payment is not eligible for finality reconciliation");
+    }
+    const checked = validateSignedPayment({
+      requestId: expected.requestId,
+      signedTransaction: expected.signedTransaction,
+      signature: expected.signature,
+      lastValidBlockHeight: expected.lastValidBlockHeight,
+    });
+    if (checked.sha256 !== expected.signedTransactionSha256) {
+      throw new Error("Corrupt saved payment cannot be reconciled");
+    }
+    if (
+      observation.requestId !== expected.requestId ||
+      observation.signature !== expected.signature
+    ) {
+      throw new Error("Finality observation does not match saved payment");
+    }
+    const terminal = observation.status !== "UNRESOLVED";
+    if (
+      (terminal &&
+        (!Number.isSafeInteger(observation.finalizedSlot) ||
+          observation.finalizedSlot! < 0)) ||
+      (!terminal && observation.finalizedSlot !== undefined)
+    ) {
+      throw new Error("Invalid finalized slot for payment observation");
+    }
+    const result = await this.db.query<DbRow>(
+      `UPDATE agentvault_model_b_payment_requests
+       SET phase = $11,
+           finalized_slot = $12,
+           finality_observed_at = CASE WHEN $12::bigint IS NULL
+             THEN NULL ELSE clock_timestamp() END
+       WHERE request_id = $1 AND genesis_hash = $2 AND program_id = $3
+         AND vault = $4 AND workflow_digest = $5 AND payment_digest = $6
+         AND signed_tx_sha256 = $7 AND tx_signature = $8
+         AND last_valid_block_height = $9 AND signed_tx_bytes = $10
+         AND (
+           (phase = 'SUBMISSION_RESERVED' AND $11::text IN
+             ('UNRESOLVED', 'CONFIRMED', 'FAILED'))
+           OR (phase = 'UNRESOLVED' AND $11::text IN ('CONFIRMED', 'FAILED'))
+         )
+       RETURNING ${FINALITY_RESULT_FIELDS}`,
+      [
+        expected.requestId,
+        expected.genesisHash,
+        expected.programId,
+        expected.vault,
+        expected.workflowDigest,
+        expected.paymentDigest,
+        expected.signedTransactionSha256,
+        expected.signature,
+        expected.lastValidBlockHeight,
+        expected.signedTransaction,
+        observation.status,
+        terminal ? observation.finalizedSlot : null,
+      ]
+    );
+    if (result.rowCount === 0) return null; // CAS lost; re-read to classify race.
+    if (result.rowCount !== 1) throw new Error("Unexpected CAS row count");
+    return rowToRecord(result.rows[0]);
   }
 }
