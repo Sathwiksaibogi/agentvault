@@ -9,10 +9,9 @@ import bs58 from "bs58";
 import { NETWORK, RPC_URL, RUNTIME_DIR } from "./runtime-config";
 
 import { loadPreparedPayment } from "./prepared-payment";
-import { loadPreparedModelBPayment } from "./model-b-prepared-payment";
 import { recoveryModeFromClaim } from "./payment-recovery-mode";
 import { AGENTVAULT_PROGRAM_ID } from "./payment-transaction-guard";
-import { signedWorkflowV2Schema } from "./signed-workflow-v2";
+import { inspectModelBRecovery } from "./model-b-read-only-recovery";
 
 type RecoveryState = {
   genesisHash: string;
@@ -21,6 +20,57 @@ type RecoveryState = {
   mint?: string;
   programId?: string;
 };
+
+type RecoverySummary = {
+  network: string;
+  authorization: string;
+  requestId: string;
+  signature: string;
+  amountBaseUnits: number;
+  nonce: string;
+  savedBytes: number;
+  currentBlockHeight: number;
+  lastValidBlockHeight: number;
+  recoveryState: ReturnType<typeof classifyPayment>;
+};
+
+function printRecoverySummary(result: RecoverySummary): void {
+  console.log("\n=== AGENTVAULT PAYMENT RECOVERY ===");
+  console.log("Network:", result.network);
+  console.log("Authorization:", result.authorization);
+  console.log("Request:", result.requestId);
+  console.log("Signature:", result.signature);
+  console.log("Amount:", result.amountBaseUnits);
+  console.log("Nonce:", result.nonce);
+  console.log("Saved bytes:", result.savedBytes);
+  console.log("Current block height:", result.currentBlockHeight);
+  console.log("Last valid block height:", result.lastValidBlockHeight);
+  console.log("\nRecovery state:", result.recoveryState);
+
+  switch (result.recoveryState) {
+    case "CONFIRMED":
+      console.log("Solana reports a successful confirmed transaction.");
+      break;
+    case "FAILED_ON_CHAIN":
+      console.log("Solana reports failure. Review transaction logs.");
+      break;
+    case "OBSERVED_UNCONFIRMED":
+      console.log("Transaction observed; confirmation remains pending.");
+      break;
+    case "PENDING":
+      console.log("Blockhash remains valid. Preserve exact signed bytes.");
+      console.log(
+        "Only the original transaction may be considered for rebroadcast."
+      );
+      break;
+    case "EXPIRED_UNRESOLVED":
+      console.log("Blockhash expired without a definitive RPC result.");
+      console.log("KEEP REQUEST LOCKED. Do not create a new payment.");
+      break;
+  }
+  console.log("\nMODE: READ ONLY");
+  console.log("No transaction broadcast or journal mutation.");
+}
 
 async function main() {
   const requestId = process.argv[2];
@@ -55,66 +105,41 @@ async function main() {
     );
   }
 
-  // 2. Dispatch to exactly one persistence verifier.
-  // Model B never falls back to Model A.
-  const prepared =
-    mode === "model-a"
-      ? loadPreparedPayment(RUNTIME_DIR, requestId)
-      : (() => {
-          assert.ok(
-            typeof state.mint === "string",
-            "Model B recovery requires a configured mint"
-          );
+  // Model B uses a separately verified v2 claim, canonical saved bytes and
+  // read-only signature-status inspection. It never falls through to Model A.
+  if (mode === "model-b") {
+    assert.ok(
+      typeof state.mint === "string",
+      "Model B recovery requires a configured mint"
+    );
+    const result = await inspectModelBRecovery(
+      RUNTIME_DIR,
+      requestId,
+      {
+        network: NETWORK,
+        genesisHash: state.genesisHash,
+        programId: AGENTVAULT_PROGRAM_ID.toBase58(),
+        vault: state.vault,
+        owner: state.owner,
+        mint: state.mint,
+      },
+      new Connection(RPC_URL, "confirmed")
+    );
+    printRecoverySummary({ ...result, authorization: mode });
+    return;
+  }
 
-          assert.equal(
-            claim.programId,
-            AGENTVAULT_PROGRAM_ID.toBase58(),
-            "Model B program mismatch"
-          );
-
-          assert.equal(claim.mint, state.mint, "Model B mint mismatch");
-
-          const signedWorkflow = signedWorkflowV2Schema.parse(
-            JSON.parse(
-              readFileSync(
-                join(RUNTIME_DIR, "approvals", `${requestId}.json`),
-                "utf8"
-              )
-            )
-          );
-
-          return loadPreparedModelBPayment(
-            RUNTIME_DIR,
-            requestId,
-            signedWorkflow,
-            {
-              network: NETWORK,
-              genesisHash: state.genesisHash,
-              programId: AGENTVAULT_PROGRAM_ID.toBase58(),
-              vault: state.vault,
-              owner: state.owner,
-              mint: state.mint,
-            }
-          );
-        })();
-
-  const { record, transaction, raw } = prepared;
-
+  // Preserve the existing Model A recovery path and its original journal.
+  const { record, transaction, raw } = loadPreparedPayment(
+    RUNTIME_DIR,
+    requestId
+  );
   assert.equal(record.network, NETWORK);
   assert.ok(transaction.signature);
-
-  // Both loaders verify serialized bytes and agent
-  // signatures before returning.
   const signature = bs58.encode(transaction.signature);
-
-  const signatureBase64 =
-    record.version === 1
-      ? record.signatureBase64
-      : record.transactionSignatureBase64;
-
   assert.equal(
     Buffer.from(transaction.signature).toString("base64"),
-    signatureBase64,
+    record.signatureBase64,
     "Recovered agent signature mismatch"
   );
 
@@ -141,47 +166,18 @@ async function main() {
     record.lastValidBlockHeight
   );
 
-  console.log("\n=== AGENTVAULT PAYMENT RECOVERY ===");
-  console.log("Network:", NETWORK);
-  console.log("Authorization:", mode);
-  console.log("Request:", requestId);
-  console.log("Signature:", signature);
-  console.log("Amount:", record.amountBaseUnits);
-  console.log("Nonce:", record.nonce);
-  console.log("Saved bytes:", raw.length);
-  console.log("Current block height:", currentBlockHeight);
-  console.log("Last valid block height:", record.lastValidBlockHeight);
-
-  console.log("\nRecovery state:", recoveryState);
-
-  switch (recoveryState) {
-    case "CONFIRMED":
-      console.log("Solana reports a successful confirmed transaction.");
-      break;
-
-    case "FAILED_ON_CHAIN":
-      console.log("Solana reports failure. Review transaction logs.");
-      break;
-
-    case "OBSERVED_UNCONFIRMED":
-      console.log("Transaction observed; confirmation remains pending.");
-      break;
-
-    case "PENDING":
-      console.log("Blockhash remains valid. Preserve exact signed bytes.");
-      console.log(
-        "Only the original transaction may be considered for rebroadcast."
-      );
-      break;
-
-    case "EXPIRED_UNRESOLVED":
-      console.log("Blockhash expired without a definitive RPC result.");
-      console.log("KEEP REQUEST LOCKED. Do not create a new payment.");
-      break;
-  }
-
-  console.log("\nMODE: READ ONLY");
-  console.log("No transaction broadcast or journal mutation.");
+  printRecoverySummary({
+    network: NETWORK,
+    authorization: mode,
+    requestId,
+    signature,
+    amountBaseUnits: record.amountBaseUnits,
+    nonce: record.nonce,
+    savedBytes: raw.length,
+    currentBlockHeight,
+    lastValidBlockHeight: record.lastValidBlockHeight,
+    recoveryState,
+  });
 }
 
 main().catch((error) => {
