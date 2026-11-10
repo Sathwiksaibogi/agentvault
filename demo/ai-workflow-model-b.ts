@@ -29,6 +29,7 @@ import {
 import { loadModelBOwnerApprovalPackage } from "./model-b-owner-approval";
 import type { ModelBWorkflowBinding } from "./model-b-workflow-binding";
 import { resolveModelBAiDecision } from "./model-b-ai-decision-cache";
+import { requireModelBPayRecommendation } from "./model-b-ai-rejection";
 import {
   assertModelBOwnerPolicy,
   assertUnchangedModelBOwnerPolicy,
@@ -332,7 +333,8 @@ export async function evaluateApprovedModelBWorkflow(requestId: string) {
     RUNTIME_DIR,
     initialBinding,
     keyHex,
-    () => evaluateWithGemini(workflow)
+    async () =>
+      requireModelBPayRecommendation(await evaluateWithGemini(workflow))
   );
 
   // Re-fetch after model inference or cached-decision verification.
