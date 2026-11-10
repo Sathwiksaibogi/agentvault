@@ -72,3 +72,7 @@ are sent and no existing request is mutated.
 The new test is skipped when the test URL is missing, and fails explicitly if
 the roles/test membership are not provisioned. Do not treat a skipped test
 as proof of PostgreSQL isolation.
+
+> **7.6C.8 supersedes the coordinator direct DML grants.** See
+> `model-b-postgres-guarded-writes.md` for the guarded function
+> migration and separate finalizer role. Do not deploy 7.6C.7 alone.

@@ -304,13 +304,18 @@ function notAllowed(action: string): never {
 }
 
 export class PostgresModelBPaymentStore {
-  constructor(private readonly db: Queryable) {}
+  constructor(
+    private readonly db: Queryable,
+    private readonly guardedWrites = false
+  ) {}
 
   /** INSERT is atomic across independent database clients/hosts. */
   async claim(input: ClaimModelBPayment): Promise<ModelBPaymentRecord> {
     validatePaymentClaim(input);
     const result = await this.db.query<DbRow>(
-      `INSERT INTO agentvault_model_b_payment_requests
+      this.guardedWrites
+        ? `SELECT ${RESULT_FIELDS} FROM agentvault_model_b_claim_guarded($1,$2,$3,$4,$5,$6)`
+        : `INSERT INTO agentvault_model_b_payment_requests
         (request_id, genesis_hash, program_id, vault, workflow_digest, payment_digest)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (request_id) DO NOTHING
@@ -339,7 +344,9 @@ export class PostgresModelBPaymentStore {
   ): Promise<ModelBPaymentRecord> {
     const { bytes, sha256, claim } = validateAuthorizedModelBPayment(input);
     const result = await this.db.query<DbRow>(
-      `UPDATE agentvault_model_b_payment_requests
+      this.guardedWrites
+        ? `SELECT ${RESULT_FIELDS} FROM agentvault_model_b_prepare_guarded($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`
+        : `UPDATE agentvault_model_b_payment_requests
        SET phase = 'PREPARED', signed_tx_bytes = $2,
            signed_tx_sha256 = $3, tx_signature = $4,
            last_valid_block_height = $5
@@ -372,7 +379,9 @@ export class PostgresModelBPaymentStore {
   async reserveOneSubmission(requestId: string): Promise<ModelBPaymentRecord> {
     assertRequestId(requestId);
     const result = await this.db.query<DbRow>(
-      `UPDATE agentvault_model_b_payment_requests
+      this.guardedWrites
+        ? `SELECT ${RESULT_FIELDS} FROM agentvault_model_b_reserve_guarded($1)`
+        : `UPDATE agentvault_model_b_payment_requests
        SET phase = 'SUBMISSION_RESERVED'
        WHERE request_id = $1 AND phase = 'PREPARED'
        RETURNING ${RESULT_FIELDS}`,
@@ -393,6 +402,11 @@ export class PostgresModelBPaymentStore {
     signature: string,
     observed: "CONFIRMED" | "FAILED" | "UNRESOLVED"
   ): Promise<ModelBPaymentRecord> {
+    if (this.guardedWrites) {
+      throw new Error(
+        "Deprecated status writer disabled for guarded PostgreSQL store"
+      );
+    }
     assertRequestId(requestId);
     if (!signature || typeof signature !== "string") {
       throw new Error("Missing observed payment signature");
@@ -488,7 +502,9 @@ export class PostgresModelBPaymentStore {
       throw new Error("Invalid finalized slot for payment observation");
     }
     const result = await this.db.query<DbRow>(
-      `UPDATE agentvault_model_b_payment_requests
+      this.guardedWrites
+        ? `SELECT ${FINALITY_RESULT_FIELDS} FROM agentvault_model_b_reconcile_guarded($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`
+        : `UPDATE agentvault_model_b_payment_requests
        SET phase = $11,
            finalized_slot = $12,
            finality_observed_at = CASE WHEN $12::bigint IS NULL
@@ -521,5 +537,19 @@ export class PostgresModelBPaymentStore {
     if (result.rowCount === 0) return null; // CAS lost; re-read to classify race.
     if (result.rowCount !== 1) throw new Error("Unexpected CAS row count");
     return rowToRecord(result.rows[0]);
+  }
+}
+
+/**
+ * For 7.6C.8+ private schemas only. All writes route through SECURITY DEFINER
+ * functions with individually restricted EXECUTE grants. Never use the legacy
+ * table-writing store with a production runtime identity.
+ *
+ * IMPORTANT: this does NOT verify Solana approvals or RPC finality inside SQL.
+ * The TypeScript validation and trusted read-only inspector remain mandatory.
+ */
+export class GuardedPostgresModelBPaymentStore extends PostgresModelBPaymentStore {
+  constructor(db: Queryable) {
+    super(db, true);
   }
 }
