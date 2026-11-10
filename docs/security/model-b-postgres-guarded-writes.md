@@ -37,8 +37,13 @@ The existing database trigger enforces monotonic transition order and immutable
 identity/transaction columns, with `finalized_slot` and DB-recorded observation
 time for terminal states.
 
-Use `GuardedPostgresModelBPaymentStore` when connecting separately privileged
-coordinator/finalizer clients. `PostgresModelBPaymentStore` remains a legacy
+Use `GuardedPostgresModelBPaymentStore(db, privateSchema)` when connecting separately
+privileged coordinator/finalizer clients. The private schema argument is **required**,
+validated at construction, and quoted into all guarded SQL including reads.
+Never rely on the caller's PostgreSQL `search_path`: otherwise a session-local
+`pg_temp` table could shadow unqualified table reads even when the role cannot
+write to the real payment table. The integration test demonstrates this shadowing
+against the unqualified name and verifies guarded reads return real data. `PostgresModelBPaymentStore` remains a legacy
 **inactive test-only** adapter using direct table DML; do not deploy its writer
 with table-owner credentials or bypass guarded database functions.
 The deprecated `recordChainStatus()` is disabled in the guarded adapter.

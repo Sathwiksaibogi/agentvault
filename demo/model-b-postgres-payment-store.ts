@@ -306,16 +306,42 @@ function notAllowed(action: string): never {
 export class PostgresModelBPaymentStore {
   constructor(
     private readonly db: Queryable,
-    private readonly guardedWrites = false
-  ) {}
+    private readonly guardedWrites = false,
+    private readonly guardedSchema?: string
+  ) {
+    if (guardedWrites) {
+      if (
+        typeof guardedSchema !== "string" ||
+        !/^[a-z][a-z0-9_]{2,62}$/.test(guardedSchema) ||
+        guardedSchema === "public" ||
+        guardedSchema === "information_schema" ||
+        guardedSchema.startsWith("pg_")
+      ) {
+        throw new Error(
+          "Guarded PostgreSQL payment store requires an explicit private schema"
+        );
+      }
+    } else if (guardedSchema !== undefined) {
+      throw new Error(
+        "Schema-qualified payments require the guarded PostgreSQL store"
+      );
+    }
+  }
+
+  /** Never resolve guarded payment data or functions through caller search_path. */
+  private relation(name: string): string {
+    return this.guardedSchema ? `"${this.guardedSchema}".${name}` : name;
+  }
 
   /** INSERT is atomic across independent database clients/hosts. */
   async claim(input: ClaimModelBPayment): Promise<ModelBPaymentRecord> {
     validatePaymentClaim(input);
     const result = await this.db.query<DbRow>(
       this.guardedWrites
-        ? `SELECT ${RESULT_FIELDS} FROM agentvault_model_b_claim_guarded($1,$2,$3,$4,$5,$6)`
-        : `INSERT INTO agentvault_model_b_payment_requests
+        ? `SELECT ${RESULT_FIELDS} FROM ${this.relation(
+            "agentvault_model_b_claim_guarded"
+          )}($1,$2,$3,$4,$5,$6)`
+        : `INSERT INTO ${this.relation("agentvault_model_b_payment_requests")}
         (request_id, genesis_hash, program_id, vault, workflow_digest, payment_digest)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (request_id) DO NOTHING
@@ -345,8 +371,10 @@ export class PostgresModelBPaymentStore {
     const { bytes, sha256, claim } = validateAuthorizedModelBPayment(input);
     const result = await this.db.query<DbRow>(
       this.guardedWrites
-        ? `SELECT ${RESULT_FIELDS} FROM agentvault_model_b_prepare_guarded($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`
-        : `UPDATE agentvault_model_b_payment_requests
+        ? `SELECT ${RESULT_FIELDS} FROM ${this.relation(
+            "agentvault_model_b_prepare_guarded"
+          )}($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`
+        : `UPDATE ${this.relation("agentvault_model_b_payment_requests")}
        SET phase = 'PREPARED', signed_tx_bytes = $2,
            signed_tx_sha256 = $3, tx_signature = $4,
            last_valid_block_height = $5
@@ -380,8 +408,10 @@ export class PostgresModelBPaymentStore {
     assertRequestId(requestId);
     const result = await this.db.query<DbRow>(
       this.guardedWrites
-        ? `SELECT ${RESULT_FIELDS} FROM agentvault_model_b_reserve_guarded($1)`
-        : `UPDATE agentvault_model_b_payment_requests
+        ? `SELECT ${RESULT_FIELDS} FROM ${this.relation(
+            "agentvault_model_b_reserve_guarded"
+          )}($1)`
+        : `UPDATE ${this.relation("agentvault_model_b_payment_requests")}
        SET phase = 'SUBMISSION_RESERVED'
        WHERE request_id = $1 AND phase = 'PREPARED'
        RETURNING ${RESULT_FIELDS}`,
@@ -412,7 +442,7 @@ export class PostgresModelBPaymentStore {
       throw new Error("Missing observed payment signature");
     }
     const result = await this.db.query<DbRow>(
-      `UPDATE agentvault_model_b_payment_requests
+      `UPDATE ${this.relation("agentvault_model_b_payment_requests")}
        SET phase = $3
        WHERE request_id = $1 AND tx_signature = $2
          AND (phase = 'SUBMISSION_RESERVED' OR
@@ -429,7 +459,9 @@ export class PostgresModelBPaymentStore {
     assertRequestId(requestId);
     const result = await this.db.query<DbRow>(
       `SELECT ${RESULT_FIELDS}
-       FROM agentvault_model_b_payment_requests WHERE request_id = $1`,
+       FROM ${this.relation(
+         "agentvault_model_b_payment_requests"
+       )} WHERE request_id = $1`,
       [requestId]
     );
     return result.rows[0] ? rowToRecord(result.rows[0]) : null;
@@ -445,7 +477,9 @@ export class PostgresModelBPaymentStore {
     assertRequestId(requestId);
     const result = await this.db.query<DbRow>(
       `SELECT ${FINALITY_RESULT_FIELDS}
-       FROM agentvault_model_b_payment_requests WHERE request_id = $1`,
+       FROM ${this.relation(
+         "agentvault_model_b_payment_requests"
+       )} WHERE request_id = $1`,
       [requestId]
     );
     return result.rows[0] ? rowToRecord(result.rows[0]) : null;
@@ -503,8 +537,10 @@ export class PostgresModelBPaymentStore {
     }
     const result = await this.db.query<DbRow>(
       this.guardedWrites
-        ? `SELECT ${FINALITY_RESULT_FIELDS} FROM agentvault_model_b_reconcile_guarded($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`
-        : `UPDATE agentvault_model_b_payment_requests
+        ? `SELECT ${FINALITY_RESULT_FIELDS} FROM ${this.relation(
+            "agentvault_model_b_reconcile_guarded"
+          )}($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`
+        : `UPDATE ${this.relation("agentvault_model_b_payment_requests")}
        SET phase = $11,
            finalized_slot = $12,
            finality_observed_at = CASE WHEN $12::bigint IS NULL
@@ -549,7 +585,7 @@ export class PostgresModelBPaymentStore {
  * The TypeScript validation and trusted read-only inspector remain mandatory.
  */
 export class GuardedPostgresModelBPaymentStore extends PostgresModelBPaymentStore {
-  constructor(db: Queryable) {
-    super(db, true);
+  constructor(db: Queryable, privateSchema: string) {
+    super(db, true, privateSchema);
   }
 }

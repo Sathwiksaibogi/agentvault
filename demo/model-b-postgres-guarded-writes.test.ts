@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -28,6 +28,86 @@ test("guarded payment migration revokes direct DML and separates finality execut
     guardedSql,
     /GRANT\s+(?:INSERT|UPDATE|DELETE|ALL)\s+ON\s+TABLE/i
   );
+});
+
+test("guarded payment storage rejects unsafe or absent schema names", () => {
+  const fake = {
+    async query() {
+      throw new Error("should not query");
+    },
+  };
+  for (const bad of [
+    undefined,
+    "",
+    "public",
+    "information_schema",
+    "pg_temp_1",
+    "public;DROP TABLE payments",
+    'agentvault".payments',
+    "MixedCase",
+    "a",
+  ]) {
+    assert.throws(
+      () => new GuardedPostgresModelBPaymentStore(fake as never, bad as string),
+      /explicit private schema/
+    );
+  }
+});
+
+test("guarded payment queries pin their private schema, never the session search_path", async () => {
+  const statements: string[] = [];
+  const fake = {
+    async query(sql: string) {
+      statements.push(sql);
+      return { rowCount: 0, rows: [] };
+    },
+  };
+  const store = new GuardedPostgresModelBPaymentStore(
+    fake as never,
+    "av76c9_private"
+  );
+  const verified = makeModelBPostgresFixture("modelb-audit-schema-001");
+  await assert.rejects(store.claim(verified.claim), /already transitioned/);
+  await assert.rejects(
+    store.persistSignedPayment(verified.payment),
+    /already transitioned/
+  );
+  await assert.rejects(
+    store.reserveOneSubmission(verified.claim.requestId),
+    /already transitioned/
+  );
+  assert.equal(await store.get(verified.claim.requestId), null);
+  assert.equal(
+    await store.getForReconciliation(verified.claim.requestId),
+    null
+  );
+  const expected = {
+    ...verified.claim,
+    phase: "SUBMISSION_RESERVED" as const,
+    signedTransaction: Buffer.from(verified.payment.signedTransaction),
+    signedTransactionSha256: createHash("sha256")
+      .update(verified.payment.signedTransaction)
+      .digest("hex"),
+    signature: verified.payment.signature,
+    lastValidBlockHeight: verified.payment.lastValidBlockHeight,
+  };
+  assert.equal(
+    await store.applyInspectedStatus(expected, {
+      status: "UNRESOLVED",
+      requestId: verified.claim.requestId,
+      signature: verified.payment.signature,
+    }),
+    null
+  );
+  assert.equal(statements.length, 6);
+  for (const sql of statements) {
+    assert.match(sql, /"av76c9_private"\.agentvault_model_b_/);
+    assert.doesNotMatch(
+      sql,
+      /FROM\s+agentvault_model_b_/,
+      "Unqualified payment lookup"
+    );
+  }
 });
 
 /**
@@ -169,7 +249,7 @@ test("real PostgreSQL: guarded functions permit the lifecycle but prohibit direc
         }
       };
       const verified = makeModelBPostgresFixture("modelb-guarded-write-001");
-      const store = new GuardedPostgresModelBPaymentStore(client);
+      const store = new GuardedPostgresModelBPaymentStore(client, schema);
       await setRole("av_model_b_reader");
       await denied(
         "INSERT INTO agentvault_model_b_payment_requests(request_id) VALUES('forbidden888')"
@@ -273,6 +353,40 @@ test("real PostgreSQL: guarded functions permit the lifecycle but prohibit direc
         (await store.getForReconciliation(verified.claim.requestId))?.phase,
         "CONFIRMED"
       );
+      // PostgreSQL resolves unqualified relation names to pg_temp first.
+      // A read-only runtime role may spoof reads using a local TEMP table.
+      await setRole("av_model_b_reader");
+      const tempPrivilege = await client.query<{ allowed: boolean }>(
+        "SELECT has_database_privilege(current_user, current_database(), 'TEMP') AS allowed"
+      );
+      if (tempPrivilege.rows[0].allowed) {
+        await client.query(`CREATE TEMP TABLE agentvault_model_b_payment_requests AS
+          SELECT * FROM "${schema}".agentvault_model_b_payment_requests`);
+        await client.query(
+          `UPDATE pg_temp.agentvault_model_b_payment_requests
+          SET phase = 'FAILED', finalized_slot = 456
+          WHERE request_id = $1`,
+          [verified.claim.requestId]
+        );
+        const shadowed = await client.query<{ phase: string }>(
+          "SELECT phase FROM agentvault_model_b_payment_requests WHERE request_id = $1",
+          [verified.claim.requestId]
+        );
+        assert.equal(
+          shadowed.rows[0].phase,
+          "FAILED",
+          "Attack setup must shadow bare table reads"
+        );
+        assert.equal(
+          (await store.get(verified.claim.requestId))?.phase,
+          "CONFIRMED"
+        );
+        assert.equal(
+          (await store.getForReconciliation(verified.claim.requestId))?.phase,
+          "CONFIRMED"
+        );
+      }
+
       await client.query("ROLLBACK"); // all test payment rows are discarded
     } finally {
       // A failed assertion may leave the transaction open; never commit it.
