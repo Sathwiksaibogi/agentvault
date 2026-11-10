@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { Keypair, SystemProgram, Transaction } from "@solana/web3.js";
 import { reconcileModelBPayment } from "./model-b-postgres-reconciliation";
+import { makeModelBPostgresFixture } from "./model-b-postgres-payment-fixture";
 import {
   PostgresModelBPaymentStore,
   type ClaimModelBPayment,
@@ -451,22 +452,13 @@ test("real PostgreSQL: finality is monotonic and one CAS wins across concurrent 
     );
     const store = new PostgresModelBPaymentStore(pool);
     const secondStore = new PostgresModelBPaymentStore(pool2);
-    const original = fixture("modelb-7c5-database001");
-    const claim: ClaimModelBPayment = {
-      requestId: original.requestId,
-      genesisHash: original.genesisHash,
-      programId: original.programId,
-      vault: original.vault,
-      workflowDigest: original.workflowDigest,
-      paymentDigest: original.paymentDigest,
-    };
+    const originalVerified = makeModelBPostgresFixture(
+      "modelb-7c5-database001"
+    );
+    const original = originalVerified.record;
+    const claim: ClaimModelBPayment = originalVerified.claim;
     await store.claim(claim);
-    await store.persistSignedPayment({
-      requestId: claim.requestId,
-      signedTransaction: original.signedTransaction!,
-      signature: original.signature!,
-      lastValidBlockHeight: original.lastValidBlockHeight!,
-    });
+    await store.persistSignedPayment(originalVerified.payment);
     await store.reserveOneSubmission(claim.requestId);
     const rpc = rpcFor(original).rpc;
     const results = await Promise.all(
@@ -511,21 +503,10 @@ test("real PostgreSQL: finality is monotonic and one CAS wins across concurrent 
     await assert.rejects(store.reserveOneSubmission(claim.requestId));
 
     // A second request with no finalized evidence may only become UNRESOLVED.
-    const next = fixture("modelb-7c5-database002");
-    await store.claim({
-      requestId: next.requestId,
-      genesisHash: next.genesisHash,
-      programId: next.programId,
-      vault: next.vault,
-      workflowDigest: next.workflowDigest,
-      paymentDigest: next.paymentDigest,
-    });
-    await store.persistSignedPayment({
-      requestId: next.requestId,
-      signedTransaction: next.signedTransaction!,
-      signature: next.signature!,
-      lastValidBlockHeight: next.lastValidBlockHeight!,
-    });
+    const nextVerified = makeModelBPostgresFixture("modelb-7c5-database002");
+    const next = nextVerified.record;
+    await store.claim(nextVerified.claim);
+    await store.persistSignedPayment(nextVerified.payment);
     await store.reserveOneSubmission(next.requestId);
     assert.equal(
       (
@@ -559,21 +540,10 @@ test("real PostgreSQL: finality is monotonic and one CAS wins across concurrent 
 
     // The deprecated primitive cannot synthesize finalized evidence on the
     // upgraded schema: a fresh reserved request still lacks finalized slot.
-    const third = fixture("modelb-7c5-database003");
-    await store.claim({
-      requestId: third.requestId,
-      genesisHash: third.genesisHash,
-      programId: third.programId,
-      vault: third.vault,
-      workflowDigest: third.workflowDigest,
-      paymentDigest: third.paymentDigest,
-    });
-    await store.persistSignedPayment({
-      requestId: third.requestId,
-      signedTransaction: third.signedTransaction!,
-      signature: third.signature!,
-      lastValidBlockHeight: third.lastValidBlockHeight!,
-    });
+    const thirdVerified = makeModelBPostgresFixture("modelb-7c5-database003");
+    const third = thirdVerified.record;
+    await store.claim(thirdVerified.claim);
+    await store.persistSignedPayment(thirdVerified.payment);
     await store.reserveOneSubmission(third.requestId);
     await assert.rejects(
       store.recordChainStatus(third.requestId, third.signature!, "CONFIRMED"),

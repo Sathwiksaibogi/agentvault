@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { Keypair, SystemProgram, Transaction } from "@solana/web3.js";
+import { makeModelBPostgresFixture } from "./model-b-postgres-payment-fixture";
 import {
   PostgresModelBPaymentStore,
   validatePaymentClaim,
@@ -155,7 +156,7 @@ test("a missing signed-payment claim cannot produce a submission permit", async 
   };
   const store = new PostgresModelBPaymentStore(fake as never);
   await assert.rejects(
-    store.persistSignedPayment(payment()),
+    store.persistSignedPayment(makeModelBPostgresFixture().payment),
     /already transitioned/
   );
   await assert.rejects(
@@ -237,7 +238,8 @@ test("real PostgreSQL: one claim and one submission permit across concurrent cli
     );
     await pool.query(migration);
     const store = new PostgresModelBPaymentStore(pool);
-    const input = claim();
+    const verified = makeModelBPostgresFixture("modelb-durable-001");
+    const input = verified.claim;
     const claimResults = await Promise.allSettled(
       Array.from({ length: 12 }, () => store.claim(input))
     );
@@ -247,7 +249,17 @@ test("real PostgreSQL: one claim and one submission permit across concurrent cli
     );
     assert.equal((await store.get(input.requestId))?.phase, "CLAIMED");
 
-    const p = payment();
+    // The store must refuse a valid signed payment if the durable claim has
+    // a different signed-approval digest (not merely the same request ID).
+    const mismatch = makeModelBPostgresFixture("modelb-claim-mismatch-007");
+    await store.claim({ ...mismatch.claim, paymentDigest: "f".repeat(64) });
+    await assert.rejects(
+      store.persistSignedPayment(mismatch.payment),
+      /already transitioned/
+    );
+    assert.equal((await store.get(mismatch.claim.requestId))?.phase, "CLAIMED");
+
+    const p = verified.payment;
     const prepared = await store.persistSignedPayment(p);
     assert.equal(prepared.phase, "PREPARED");
     assert.deepEqual(prepared.signedTransaction, p.signedTransaction);

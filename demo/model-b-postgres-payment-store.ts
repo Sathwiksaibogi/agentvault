@@ -8,6 +8,12 @@
  */
 import { createHash } from "node:crypto";
 import { PublicKey, Transaction } from "@solana/web3.js";
+import { assertSerializedModelBPayment } from "./model-b-transaction-guard";
+import type { ModelBWorkflowBinding } from "./model-b-workflow-binding";
+import { signedWorkflowV2Schema } from "./signed-workflow-v2";
+import { paymentApprovalV2Schema } from "./payment-approval-v2";
+import { computeModelBWorkflowDigest } from "./model-b-workflow-digest";
+import { computeModelBPaymentApprovalDigest } from "./model-b-request-journal";
 import type { Pool, PoolClient } from "pg";
 
 type Queryable = Pick<Pool | PoolClient, "query">;
@@ -34,6 +40,11 @@ export type SignedModelBPayment = {
   signedTransaction: Uint8Array;
   signature: string;
   lastValidBlockHeight: number;
+};
+
+/** Mandatory cryptographic authorization context for the only persistence entry point. */
+export type AuthorizedSignedModelBPayment = SignedModelBPayment & {
+  binding: ModelBWorkflowBinding;
 };
 
 export type ModelBPaymentRecord = ClaimModelBPayment & {
@@ -151,6 +162,69 @@ export function validateSignedPayment(input: SignedModelBPayment): {
   return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
+/**
+ * Fail closed BEFORE executing SQL: verify owner signatures, workflow/approval
+ * binding, canonical signed Model B message, and exact claim digests.
+ * The supplied context's nowUnix is untrusted; use the actual wall clock for
+ * approval expiry. Live on-chain nonce/policy still belongs to the separate
+ * pre-confirmation gate, not this offline storage method.
+ */
+export function validateAuthorizedModelBPayment(
+  input: AuthorizedSignedModelBPayment
+): {
+  bytes: Buffer;
+  sha256: string;
+  claim: ClaimModelBPayment;
+} {
+  if (!input || !input.binding) {
+    throw new Error(
+      "Model B owner-approval binding is required before persistence"
+    );
+  }
+  const { bytes, sha256 } = validateSignedPayment(input);
+  if (input.lastValidBlockHeight <= 0) {
+    throw new Error(
+      "Model B payment requires a positive last-valid block height"
+    );
+  }
+  const binding = input.binding;
+  const workflow = signedWorkflowV2Schema.parse(binding.signedWorkflow);
+  const approval = paymentApprovalV2Schema.parse(binding.paymentApproval);
+  if (
+    workflow.workflow.requestId !== input.requestId ||
+    approval.requestId !== input.requestId
+  ) {
+    throw new Error("Model B signed approvals do not match request ID");
+  }
+  // Even if a caller supplies an old nowUnix, expired approvals cannot be
+  // prepared as fresh payments. Recovery never uses this method.
+  const currentBinding: ModelBWorkflowBinding = {
+    ...binding,
+    nowUnix: Math.floor(Date.now() / 1000),
+  };
+  const transaction = Transaction.from(bytes);
+  if (transaction.instructions.length !== 3) {
+    throw new Error("Model B requires exactly three instructions");
+  }
+  assertSerializedModelBPayment(transaction, {
+    binding: currentBinding,
+    paymentInstruction: transaction.instructions[2],
+  });
+  const claim: ClaimModelBPayment = {
+    requestId: input.requestId,
+    genesisHash: workflow.workflow.genesisHash,
+    programId: workflow.workflow.programId,
+    vault: workflow.workflow.vault,
+    workflowDigest: computeModelBWorkflowDigest(workflow),
+    paymentDigest: computeModelBPaymentApprovalDigest(
+      approval,
+      binding.signatureBase64
+    ),
+  };
+  validatePaymentClaim(claim);
+  return { bytes, sha256, claim };
+}
+
 function rowToRecord(row: DbRow): ModelBPaymentRecord {
   if (
     !row ||
@@ -254,17 +328,24 @@ export class PostgresModelBPaymentStore {
     return rowToRecord(result.rows[0]);
   }
 
-  /** Can transition the original claim to PREPARED just once. */
+  /**
+   * The ONLY supported CLAIMED -> PREPARED API. Requires cryptographically
+   * verified owner-signed Model B approvals and an exact signed payment.
+   * Signed arbitrary SOL transfers are NEVER accepted by this method.
+   * Callers must still check live on-chain policy and reserve funds separately.
+   */
   async persistSignedPayment(
-    input: SignedModelBPayment
+    input: AuthorizedSignedModelBPayment
   ): Promise<ModelBPaymentRecord> {
-    const { bytes, sha256 } = validateSignedPayment(input);
+    const { bytes, sha256, claim } = validateAuthorizedModelBPayment(input);
     const result = await this.db.query<DbRow>(
       `UPDATE agentvault_model_b_payment_requests
        SET phase = 'PREPARED', signed_tx_bytes = $2,
            signed_tx_sha256 = $3, tx_signature = $4,
            last_valid_block_height = $5
        WHERE request_id = $1 AND phase = 'CLAIMED'
+         AND genesis_hash = $6 AND program_id = $7 AND vault = $8
+         AND workflow_digest = $9 AND payment_digest = $10
        RETURNING ${RESULT_FIELDS}`,
       [
         input.requestId,
@@ -272,6 +353,11 @@ export class PostgresModelBPaymentStore {
         sha256,
         input.signature,
         input.lastValidBlockHeight,
+        claim.genesisHash,
+        claim.programId,
+        claim.vault,
+        claim.workflowDigest,
+        claim.paymentDigest,
       ]
     );
     if (result.rowCount !== 1) notAllowed("Payment persistence");
