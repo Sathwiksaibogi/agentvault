@@ -60,3 +60,23 @@ Note: workflow amounts are numeric in the existing API response, unlike
 treasury balances and task amounts, which are decimal strings. The SDK
 checks workflow numeric amounts are safe integers; larger workflow values
 require a separate, coordinated API contract change.
+
+## Integration with the real API handler (7.7A.3)
+
+After building the SDK, run the integration test using the repository's
+`createApiHandler`, actual HTTP requests over an ephemeral loopback port,
+and deterministic read-only data readers:
+
+```bash
+pnpm exec tsc -p sdk/tsconfig.build.json
+pnpm exec tsx --test sdk/test/http-handler.integration.test.ts
+```
+
+This checks all five SDK read calls, owner/developer authorization, vault
+isolation, unauthorized credentials, 404 errors, and sanitized 503 responses
+through the existing backend code (not a fake `fetch` implementation).
+
+**Test boundary:** the HTTP handler is real, but its data readers are fixtures.
+This test does **not** assert live Devnet RPC, PostgreSQL integration, payment
+execution, or finality acceptance. It neither starts the production server
+nor reads real credentials or submits transactions.
