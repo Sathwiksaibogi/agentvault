@@ -4,4 +4,10 @@ export {
   AgentVaultProtocolError,
   AgentVaultTransportError,
 } from "./client.js";
-export type { Agent, AgentVaultClientOptions, Treasury } from "./types.js";
+export type {
+  ActivityEntry,
+  Agent,
+  AgentVaultClientOptions,
+  Treasury,
+  WorkflowStatus,
+} from "./types.js";

@@ -1,4 +1,10 @@
-import type { Agent, AgentVaultClientOptions, Treasury } from "./types.js";
+import type {
+  ActivityEntry,
+  Agent,
+  AgentVaultClientOptions,
+  Treasury,
+  WorkflowStatus,
+} from "./types.js";
 
 export class AgentVaultHttpError extends Error {
   constructor(
@@ -80,6 +86,60 @@ function isAgent(value: unknown): value is Agent {
   );
 }
 
+// Match the API router's workflow ID rule; reject invalid IDs before any request.
+const REQUEST_ID_PATTERN = /^[a-zA-Z0-9_-]{8,64}$/;
+
+function isRequestId(value: unknown): value is string {
+  return typeof value === "string" && REQUEST_ID_PATTERN.test(value);
+}
+
+function isWorkflowStatus(value: unknown): value is WorkflowStatus {
+  if (
+    !isObject(value) ||
+    !isObject(value.approval) ||
+    !isObject(value.aiDecision) ||
+    !isObject(value.execution)
+  ) return false;
+  const { approval, aiDecision, execution } = value;
+  const payment = execution.payment;
+  return (
+    isRequestId(value.requestId) &&
+    isText(value.assignedAgent) &&
+    isText(value.workflowKind) &&
+    isInteger(value.taskId) &&
+    isInteger(value.amountBaseUnits) &&
+    isText(value.network) &&
+    isText(value.recipient) &&
+    typeof approval.signatureVerified === "boolean" &&
+    typeof approval.currentlyValid === "boolean" &&
+    isInteger(approval.expiresAtUnix) &&
+    typeof aiDecision.receiptFilePresent === "boolean" &&
+    isText(aiDecision.verification) &&
+    isText(execution.journalStatus) &&
+    (payment === null ||
+      (isObject(payment) &&
+        isText(payment.signature) &&
+        isText(payment.recoveryState) &&
+        isInteger(payment.amountBaseUnits) &&
+        isUnsignedIntegerText(payment.nonce)))
+  );
+}
+
+function isActivityEntry(value: unknown): value is ActivityEntry {
+  if (!isObject(value)) return false;
+  return (
+    isText(value.signature) &&
+    isInteger(value.slot) &&
+    (value.blockTimeUnix === null || isInteger(value.blockTimeUnix)) &&
+    isText(value.agentId) &&
+    isText(value.workflow) &&
+    isInteger(value.taskId) &&
+    isText(value.taskPda) &&
+    typeof value.succeeded === "boolean" &&
+    isText(value.explorerUrl)
+  );
+}
+
 export class AgentVaultClient {
   private readonly origin: string;
   private readonly token: string;
@@ -137,6 +197,47 @@ export class AgentVaultClient {
       throw new AgentVaultProtocolError(path);
     }
     return body.agents;
+  }
+
+  /** List workflow IDs visible to the authenticated principal. */
+  async listWorkflowIds(): Promise<string[]> {
+    const path = "/api/workflows";
+    const body = await this.getJson(path);
+    if (
+      !isObject(body) ||
+      !Array.isArray(body.requestIds) ||
+      !body.requestIds.every(isRequestId)
+    ) {
+      throw new AgentVaultProtocolError(path);
+    }
+    return body.requestIds;
+  }
+
+  /** Inspect a previously authorized workflow; never broadcasts a payment. */
+  async getWorkflow(requestId: string): Promise<WorkflowStatus> {
+    if (!isRequestId(requestId)) {
+      throw new TypeError("requestId must match [a-zA-Z0-9_-]{8,64}");
+    }
+    const path = `/api/workflows/${encodeURIComponent(requestId)}`;
+    const body = await this.getJson(path);
+    if (!isWorkflowStatus(body) || body.requestId !== requestId) {
+      throw new AgentVaultProtocolError(path);
+    }
+    return body;
+  }
+
+  /** Read recent on-chain activity. The API may return an empty array. */
+  async listActivity(): Promise<ActivityEntry[]> {
+    const path = "/api/activity";
+    const body = await this.getJson(path);
+    if (
+      !isObject(body) ||
+      !Array.isArray(body.activity) ||
+      !body.activity.every(isActivityEntry)
+    ) {
+      throw new AgentVaultProtocolError(path);
+    }
+    return body.activity;
   }
 
   private async getJson(path: string): Promise<unknown> {

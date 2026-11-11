@@ -34,6 +34,48 @@ export interface Agent {
   };
 }
 
+/** The existing `/api/workflows/:requestId` read-only response. */
+export interface WorkflowStatus {
+  requestId: string;
+  assignedAgent: string;
+  workflowKind: string;
+  taskId: number;
+  amountBaseUnits: number;
+  network: string;
+  recipient: string;
+  approval: {
+    signatureVerified: boolean;
+    currentlyValid: boolean;
+    expiresAtUnix: number;
+  };
+  aiDecision: {
+    receiptFilePresent: boolean;
+    verification: string;
+  };
+  execution: {
+    journalStatus: string;
+    payment: {
+      signature: string;
+      recoveryState: string;
+      amountBaseUnits: number;
+      nonce: string;
+    } | null;
+  };
+}
+
+/** The existing `/api/activity` on-chain activity entry. */
+export interface ActivityEntry {
+  signature: string;
+  slot: number;
+  blockTimeUnix: number | null;
+  agentId: string;
+  workflow: string;
+  taskId: number;
+  taskPda: string;
+  succeeded: boolean;
+  explorerUrl: string;
+}
+
 export interface AgentVaultClientOptions {
   /** API origin, e.g. http://127.0.0.1:3000 or https://api.example.com. */
   baseUrl: string;
