@@ -53,7 +53,10 @@ function isTerminal(record: ModelBPaymentRecord): boolean {
  */
 export async function reconcileModelBPayment(
   requestId: string,
-  store: PostgresModelBPaymentStore,
+  store: Pick<
+    PostgresModelBPaymentStore,
+    "getForReconciliation" | "applyInspectedStatus"
+  >,
   rpc: ModelBFinalityRpc
 ): Promise<ReconciliationResult> {
   const before = await store.getForReconciliation(requestId);
