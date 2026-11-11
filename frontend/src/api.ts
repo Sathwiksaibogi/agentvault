@@ -80,7 +80,7 @@ export interface DashboardData {
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(`/dashboard${path}`, {
     cache: "no-store",
   });
 

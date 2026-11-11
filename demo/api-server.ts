@@ -3,6 +3,7 @@ import BN from "bn.js";
 import { strict as assert } from "node:assert";
 import { createServer } from "node:http";
 import { createApiHandler } from "./api-handler";
+import { createOwnerDashboardSessionHandler } from "./owner-dashboard-session";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createBoundedRpcFetch } from "./api-rpc-security";
@@ -430,8 +431,7 @@ async function main(): Promise<void> {
     // Do not accept requests until PostgreSQL is reachable.
     await verifyApiDatabase(database);
 
-    const server = createServer(
-      createApiHandler({
+    const apiHandler = createApiHandler({
         network: NETWORK,
         runtimeVault: state.vault,
         credentials: API_CREDENTIALS,
@@ -448,8 +448,15 @@ async function main(): Promise<void> {
         },
 
         cachedRead,
-      })
-    );
+      });
+    const server = createServer(createOwnerDashboardSessionHandler({
+      apiHandler,
+      ownerPublicKey: state.owner,
+      vaultPublicKey: state.vault,
+      ownerApiToken: API_CREDENTIALS.ownerToken,
+      frontendOrigin: "http://127.0.0.1:5173",
+      upstreamOrigin: `http://${HOST}:${PORT}`,
+    }));
     configureApiHttpServer(server);
 
     let shuttingDown = false;
