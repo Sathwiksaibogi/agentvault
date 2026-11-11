@@ -9,3 +9,6 @@ allowBuilds:
 packages:
   - "frontend"
   - "sdk"
+
+overrides:
+  "@types/node": "24.19.2"
