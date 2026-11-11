@@ -1,0 +1,36 @@
+# AgentVault TypeScript SDK — 7.7A.1
+
+**Status:** private, server-side, read-only foundation. This is not a published or production-ready SDK. It wraps the existing `/api/treasury` and `/api/agents` endpoints; it does not construct transactions, issue API keys, approve payments, or bypass finality quarantine.
+
+## Build and test (from the AgentVault repository root)
+
+```bash
+pnpm exec tsc -p sdk/tsconfig.build.json
+node --test sdk/test/*.test.mjs
+```
+
+The build outputs `sdk/dist/`; do not commit generated files. The root project already contains the TypeScript compiler.
+
+## Usage (backend only)
+
+```js
+import { AgentVaultClient } from "./sdk/dist/index.js";
+
+const token = process.env.AGENTVAULT_API_TOKEN;
+if (!token) throw new Error("Set AGENTVAULT_API_TOKEN in the backend process");
+
+const client = new AgentVaultClient({
+  baseUrl: "http://127.0.0.1:3000",
+  token,
+});
+
+const treasury = await client.getTreasury();
+const agents = await client.listAgents();
+console.log({ paused: treasury.paused, agentCount: agents.length });
+```
+
+Do **not** put a developer or owner Bearer token in React/Vite client code, public environment variables, logs, or committed files. These methods are subject to the API server's existing role and scope policy. HTTP is only accepted for loopback hosts; use HTTPS for remote services.
+
+The money and nonce fields already represented as base-unit decimal strings by the frontend stay as strings in this SDK. The SDK validates the two JSON response shapes before returning typed data.
+
+Next: inspect actual workflow response and role scopes, then add workflow/activity reads and write operations in separate tested slices. All payment execution and finality release gates remain unchanged.
