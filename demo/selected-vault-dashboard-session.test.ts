@@ -92,6 +92,10 @@ async function withServer(run: (ctx: Context) => Promise<void>, network: "devnet
   };
   const handler = createSelectedVaultSessionHandler({
     rpc, network, expectedGenesisHash: GENESIS, frontendOrigin: FRONTEND,
+    readScopedAgents: async (verified) => ({
+      network: "devnet", owner: verified.owner, vault: verified.vault,
+      agents: [],
+    }),
     now: () => timestamp,
     fallbackHandler: (_req, res) => {
       fallbackCount++;
@@ -180,12 +184,22 @@ test("vault A session cannot select vault B, and B signs in to its own data", as
   await withServer(async (ctx) => {
     const cookieA = await loginOwner(ctx, ctx.a);
     assert.equal((await read(ctx, `/owner-vault/api/treasury?vault=${ctx.b.vault}`, cookieA)).status, 404);
-    assert.equal((await read(ctx, "/owner-vault/api/agents", cookieA)).status, 404);
+    const agentsA = await read(ctx, "/owner-vault/api/agents", cookieA);
+    assert.equal(agentsA.status, 200);
+    assert.deepEqual(await agentsA.json(), {
+      network: "devnet", owner: ctx.a.owner, vault: ctx.a.vault, agents: [],
+    });
+    assert.equal((await read(ctx, "/owner-vault/api/agents", cookieA, "POST")).status, 405);
+    assert.equal((await read(ctx, `/owner-vault/api/agents?vault=${ctx.b.vault}`, cookieA)).status, 404);
     const result = await read(ctx, "/owner-vault/api/treasury", cookieA);
     assert.equal((await result.json()).owner, ctx.a.owner);
     const cookieB = await loginOwner(ctx, ctx.b);
     const dataB = await read(ctx, "/owner-vault/api/treasury", cookieB);
     assert.equal((await dataB.json()).owner, ctx.b.owner);
+    const agentsB = await read(ctx, "/owner-vault/api/agents", cookieB);
+    assert.deepEqual(await agentsB.json(), {
+      network: "devnet", owner: ctx.b.owner, vault: ctx.b.vault, agents: [],
+    });
     assert.equal(ctx.fallbackCalls(), 0);
   });
 });
@@ -218,10 +232,12 @@ test("fails closed on genesis mismatch or invalidated treasury after login", asy
     const cookie = await loginOwner(ctx, ctx.a);
     ctx.setGenesis("another-chain");
     assert.equal((await read(ctx, "/owner-vault/api/treasury", cookie)).status, 503);
+    assert.equal((await read(ctx, "/owner-vault/api/agents", cookie)).status, 503);
     assert.equal((await getChallenge(ctx, ctx.b)).status, 403);
     ctx.setGenesis(GENESIS);
     ctx.a.treasuryInfo.data[32] ^= 1;
     assert.equal((await read(ctx, "/owner-vault/api/treasury", cookie)).status, 503);
+    assert.equal((await read(ctx, "/owner-vault/api/agents", cookie)).status, 503);
   });
 });
 

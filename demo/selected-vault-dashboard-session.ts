@@ -16,7 +16,9 @@ import nacl from "tweetnacl";
 import {
   verifyOwnerVaultOnChain,
   type ConfirmedAccountReader,
+  type VerifiedOwnerVault,
 } from "./owner-vault-verifier";
+import type { SelectedVaultAgentsResponse } from "./selected-vault-agent-reader";
 
 const COOKIE_NAME = "av_selected_vault_session";
 const MAX_CHALLENGES = 128;
@@ -46,6 +48,7 @@ export interface SelectedVaultSessionOptions {
   network: "localnet" | "devnet";
   expectedGenesisHash: string;
   frontendOrigin: string;
+  readScopedAgents?: (verified: VerifiedOwnerVault) => Promise<SelectedVaultAgentsResponse>;
   now?: () => number;
 }
 
@@ -118,6 +121,7 @@ export function createSelectedVaultSessionHandler(options: SelectedVaultSessionO
     network,
     expectedGenesisHash,
     frontendOrigin,
+    readScopedAgents,
     now = Date.now,
   } = options;
   if (frontendOrigin !== "http://127.0.0.1:5173") {
@@ -265,7 +269,7 @@ export function createSelectedVaultSessionHandler(options: SelectedVaultSessionO
 
     if (path.startsWith("/owner-vault/api/")) {
       if (req.method !== "GET") return void sendJson(res, 405, { error: "Read-only endpoint" });
-      if (url.search || path !== "/owner-vault/api/treasury") {
+      if (url.search || (path !== "/owner-vault/api/treasury" && path !== "/owner-vault/api/agents")) {
         return void sendJson(res, 404, { error: "Endpoint not found" });
       }
       const session = currentSession(req);
@@ -276,6 +280,16 @@ export function createSelectedVaultSessionHandler(options: SelectedVaultSessionO
           const verified = await verifyOwnerVaultOnChain({
             rpc, ownerAddress: session.owner, vaultAddress: session.vault,
           });
+          if (path === "/owner-vault/api/agents") {
+            if (!readScopedAgents) throw new Error("Scoped agent reader unavailable");
+            const data = await readScopedAgents(verified);
+            if (data.network !== "devnet" || data.owner !== verified.owner ||
+                data.vault !== verified.vault) {
+              throw new Error("Scoped agent reader returned a different vault");
+            }
+            sendJson(res, 200, data);
+            return;
+          }
           const mintInfo = await rpc.getAccountInfo(new PublicKey(verified.mint), "confirmed");
           if (!mintInfo || mintInfo.executable || !mintInfo.owner.equals(TOKEN_PROGRAM) ||
               mintInfo.data.length !== 82 || mintInfo.data[45] !== 1) {

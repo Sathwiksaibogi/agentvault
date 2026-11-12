@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { createApiHandler } from "./api-handler";
 import { createOwnerDashboardSessionHandler } from "./owner-dashboard-session";
 import { createSelectedVaultSessionHandler } from "./selected-vault-dashboard-session";
+import { projectVerifiedVaultAgentsAndTasks } from "./selected-vault-agent-reader";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createBoundedRpcFetch } from "./api-rpc-security";
@@ -464,6 +465,19 @@ async function main(): Promise<void> {
       network: NETWORK,
       expectedGenesisHash: state.genesisHash,
       frontendOrigin: "http://127.0.0.1:5173",
+      readScopedAgents: async (verified) => {
+        // Anchor .all() returns only program-owned, discriminator-decoded
+        // accounts of the requested type. Never read demo agent definitions.
+        const [agentAccounts, taskAccounts] = await Promise.all([
+          program.account.agent.all(),
+          program.account.task.all(),
+        ]);
+        return projectVerifiedVaultAgentsAndTasks({
+          verified,
+          agentAccounts,
+          taskAccounts,
+        });
+      },
     }));
     configureApiHttpServer(server);
 
