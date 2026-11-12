@@ -120,3 +120,33 @@ test("owner management refuses a mismatched wallet before any RPC call or transa
   }), /Connected wallet and authenticated owner/);
   assert.equal(sent, false);
 });
+
+
+test("agent PDA cannot be registered as its own signing authority", async () => {
+  const { registerOwnerAgent } = await import("../src/owner-management");
+  const owner = Keypair.generate().publicKey;
+  const vault = Keypair.generate().publicKey;
+  const offCurve = deriveAgentPda(vault, Keypair.generate().publicKey);
+  assert.equal(PublicKey.isOnCurve(offCurve.toBytes()), false);
+  assert.throws(
+    () => buildRegisterAgentInstruction({ owner, vault, authority: offCurve }),
+    /signing-wallet public key, not a PDA/
+  );
+  const wallet = {
+    publicKey: owner,
+    async connect() { return { publicKey: owner }; },
+    async signAndSendTransaction() { throw new Error("Should not prompt Phantom"); },
+  };
+  const snapshot = {
+    network: "devnet" as const, owner: owner.toBase58(), vault: vault.toBase58(),
+    vaultId: "8001", tokenMint: Keypair.generate().publicKey.toBase58(),
+    treasury: Keypair.generate().publicKey.toBase58(), decimals: 6, paused: false,
+    availableBaseUnits: "1000000",
+  };
+  await assert.rejects(
+    () => registerOwnerAgent({
+      wallet, snapshot, sessionOwner: snapshot.owner, authority: offCurve.toBase58(),
+    }),
+    /signing-wallet public key, not a PDA/
+  );
+});

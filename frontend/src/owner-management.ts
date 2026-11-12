@@ -91,6 +91,9 @@ export function buildRegisterAgentInstruction(args: {
   vault: PublicKey;
   authority: PublicKey;
 }): { agent: PublicKey; instruction: TransactionInstruction } {
+  if (!PublicKey.isOnCurve(args.authority.toBytes())) {
+    throw new Error("Agent authority must be a signing-wallet public key, not a PDA");
+  }
   const agent = deriveAgentPda(args.vault, args.authority);
   return {
     agent,
@@ -218,8 +221,27 @@ async function sendAndVerify(args: {
   transaction.add(instruction);
   if (!wallet.publicKey?.equals(owner)) throw new Error("Wallet changed before signing");
   const { signature } = await wallet.signAndSendTransaction(transaction);
-  const status = await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
-  if (status.value.err) throw new Error("Devnet transaction failed; inspect your transaction history");
+  try {
+    const result = await connection.confirmTransaction(
+      { signature, blockhash, lastValidBlockHeight }, "confirmed"
+    );
+    if (result.value.err) throw new Error("Transaction failed on-chain");
+  } catch {
+    // An expired blockhash or RPC timeout alone is not proof of failure.
+    const status = await connection.getSignatureStatuses(
+      [signature], { searchTransactionHistory: true }
+    ).then((result) => result.value[0]).catch(() => null);
+    if (status?.err) {
+      throw new Error(`Devnet transaction ${signature} failed on-chain; inspect Explorer`);
+    }
+    if (status?.confirmationStatus !== "confirmed" &&
+        status?.confirmationStatus !== "finalized") {
+      throw new Error(
+        `Devnet transaction ${signature} is unverified (possibly expired). ` +
+        "Check its signature and agent/task PDA before retrying. Never automatically resubmit."
+      );
+    }
+  }
   const account = await connection.getAccountInfo(createdPda, "confirmed");
   if (!account || account.executable || !account.owner.equals(DEFAULT_PROGRAM_ID)) {
     throw new Error("Transaction confirmed but account verification failed; refresh and inspect the signature");
@@ -228,8 +250,11 @@ async function sendAndVerify(args: {
 }
 
 export async function registerOwnerAgent(args: OwnerWriteContext & { authority: string }) {
-  const { connection, owner, vault } = await preflight(args);
   const authority = canonical(args.authority);
+  if (!PublicKey.isOnCurve(authority.toBytes())) {
+    throw new Error("Agent authority must be a signing-wallet public key, not a PDA");
+  }
+  const { connection, owner, vault } = await preflight(args);
   const { agent, instruction } = buildRegisterAgentInstruction({ owner, vault, authority });
   return sendAndVerify({ connection, wallet: args.wallet, owner, instruction, createdPda: agent });
 }
