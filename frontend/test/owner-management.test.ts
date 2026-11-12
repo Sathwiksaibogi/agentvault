@@ -150,3 +150,70 @@ test("agent PDA cannot be registered as its own signing authority", async () => 
     /signing-wallet public key, not a PDA/
   );
 });
+
+
+test("sign-only owner management broadcasts through Devnet RPC, never Phantom", async () => {
+  const { signAndBroadcastThroughDevnet } = await import("../src/owner-management");
+  const owner = Keypair.generate();
+  let calls = 0;
+  const unsigned = new (await import("@solana/web3.js")).Transaction({
+    feePayer: owner.publicKey,
+    recentBlockhash: Keypair.generate().publicKey.toBase58(),
+  }).add(SystemProgram.transfer({
+    fromPubkey: owner.publicKey,
+    toPubkey: Keypair.generate().publicKey,
+    lamports: 1,
+  }));
+  const wallet = {
+    publicKey: owner.publicKey,
+    async connect() { return { publicKey: owner.publicKey }; },
+    async signAndSendTransaction() { throw new Error("Phantom broadcast must never be used"); },
+    async signTransaction(tx: typeof unsigned) { tx.sign(owner); return tx; },
+  };
+  const connection = {
+    async sendRawTransaction(
+      raw: Buffer | Uint8Array | number[],
+      options?: import("@solana/web3.js").SendOptions
+    ) {
+      calls += 1;
+      assert.ok(raw.length > 64);
+      assert.deepEqual(options, {
+        preflightCommitment: "confirmed", skipPreflight: false, maxRetries: 3,
+      });
+      return "devnet-sent";
+    },
+  };
+  assert.equal(await signAndBroadcastThroughDevnet(connection, wallet, unsigned), "devnet-sent");
+  assert.equal(calls, 1);
+});
+
+test("sign-only flow rejects a wallet-modified message before broadcast", async () => {
+  const { signAndBroadcastThroughDevnet } = await import("../src/owner-management");
+  const { Transaction } = await import("@solana/web3.js");
+  const owner = Keypair.generate();
+  const unsigned = new Transaction({
+    feePayer: owner.publicKey,
+    recentBlockhash: Keypair.generate().publicKey.toBase58(),
+  }).add(SystemProgram.transfer({
+    fromPubkey: owner.publicKey,
+    toPubkey: Keypair.generate().publicKey,
+    lamports: 1,
+  }));
+  const wallet = {
+    publicKey: owner.publicKey,
+    async connect() { return { publicKey: owner.publicKey }; },
+    async signAndSendTransaction() { throw new Error("Unexpected broadcast"); },
+    async signTransaction(tx: Transaction) {
+      tx.recentBlockhash = Keypair.generate().publicKey.toBase58();
+      tx.sign(owner);
+      return tx;
+    },
+  };
+  let sent = false;
+  const connection = { async sendRawTransaction() { sent = true; return "bad"; } };
+  await assert.rejects(
+    () => signAndBroadcastThroughDevnet(connection, wallet, unsigned),
+    /modified transaction/
+  );
+  assert.equal(sent, false);
+});

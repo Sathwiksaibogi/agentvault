@@ -5,20 +5,21 @@ import {
   registerOwnerAgent,
   type SelectedAgentSnapshot,
   type SelectedVaultSnapshot,
+  type OwnerManagementWallet,
 } from "./owner-management";
-import { DEVNET_RPC_URL, type SignAndSendWallet } from "./onboarding";
+import { DEVNET_RPC_URL } from "./onboarding";
 
 const border = { border: "1px solid #334155", padding: 18, borderRadius: 10, marginTop: 18 } as const;
 const input = { padding: 9, width: "min(100%, 500px)", boxSizing: "border-box" } as const;
 
-function phantom(): SignAndSendWallet | null {
+function phantom(): OwnerManagementWallet | null {
   const browser = window as unknown as {
-    phantom?: { solana?: SignAndSendWallet };
-    solana?: SignAndSendWallet;
+    phantom?: { solana?: OwnerManagementWallet };
+    solana?: OwnerManagementWallet;
   };
   const provider = browser.phantom?.solana ?? browser.solana;
   return provider && typeof provider.connect === "function" &&
-    typeof provider.signAndSendTransaction === "function" ? provider : null;
+    typeof provider.signTransaction === "function" ? provider : null;
 }
 
 type Props = {
@@ -40,7 +41,7 @@ export default function OwnerManagementPanel({ snapshot, sessionOwner, agents, o
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ signature: string; account: string } | null>(null);
 
-  async function transact(action: (wallet: SignAndSendWallet) => Promise<{ signature: string; account: string }>) {
+  async function transact(action: (wallet: OwnerManagementWallet) => Promise<{ signature: string; account: string }>) {
     setError(null);
     setResult(null);
     const wallet = phantom();

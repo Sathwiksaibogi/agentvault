@@ -21,6 +21,10 @@ import {
   type SignAndSendWallet,
 } from "./onboarding";
 
+export type OwnerManagementWallet = SignAndSendWallet & {
+  signTransaction?: (transaction: Transaction) => Promise<Transaction>;
+};
+
 const REGISTER_AGENT_DISCRIMINATOR = Buffer.from([135, 157, 66, 195, 2, 113, 175, 30]);
 const CREATE_TASK_DISCRIMINATOR = Buffer.from([194, 80, 6, 180, 232, 127, 48, 171]);
 const MAX_U64 = (BigInt(1) << BigInt(64)) - BigInt(1);
@@ -168,7 +172,7 @@ export type SelectedAgentSnapshot = {
 };
 
 export type OwnerWriteContext = {
-  wallet: SignAndSendWallet;
+  wallet: OwnerManagementWallet;
   snapshot: SelectedVaultSnapshot;
   /** Caller must have an authenticated, vault-scoped owner session. */
   sessionOwner: string;
@@ -205,9 +209,47 @@ async function preflight(ctx: OwnerWriteContext): Promise<{
   return { connection, owner, vault, mint };
 }
 
+/** Sign with Phantom; submit explicitly to the configured Devnet RPC.
+ * Never auto-resign or auto-resubmit when the outcome is uncertain.
+ */
+export async function signAndBroadcastThroughDevnet(
+  connection: Pick<Connection, "sendRawTransaction">,
+  wallet: OwnerManagementWallet,
+  unsigned: Transaction
+): Promise<string> {
+  if (typeof wallet.signTransaction !== "function") {
+    throw new Error("Wallet must support signTransaction for Devnet owner management");
+  }
+  if (!unsigned.feePayer || !wallet.publicKey?.equals(unsigned.feePayer)) {
+    throw new Error("Wallet changed before signing");
+  }
+  const expectedMessage = Buffer.from(unsigned.serializeMessage());
+  const signed = await wallet.signTransaction(unsigned);
+  if (!unsigned.feePayer || !wallet.publicKey?.equals(unsigned.feePayer)) {
+    throw new Error("Wallet changed during signing");
+  }
+  if (!Buffer.from(signed.serializeMessage()).equals(expectedMessage)) {
+    throw new Error("Wallet returned a modified transaction; nothing was broadcast");
+  }
+  // serialize() verifies all required Ed25519 signatures before network submission.
+  const raw = signed.serialize();
+  try {
+    return await connection.sendRawTransaction(raw, {
+      preflightCommitment: "confirmed",
+      skipPreflight: false,
+      maxRetries: 3,
+    });
+  } catch {
+    throw new Error(
+      "Devnet broadcast did not return a signature. Outcome is unverified; " +
+      "inspect the target agent/task PDA before retrying. No automatic resubmission."
+    );
+  }
+}
+
 async function sendAndVerify(args: {
   connection: Connection;
-  wallet: SignAndSendWallet;
+  wallet: OwnerManagementWallet;
   owner: PublicKey;
   instruction: TransactionInstruction;
   createdPda: PublicKey;
@@ -220,7 +262,7 @@ async function sendAndVerify(args: {
   const transaction = new Transaction({ feePayer: owner, recentBlockhash: blockhash });
   transaction.add(instruction);
   if (!wallet.publicKey?.equals(owner)) throw new Error("Wallet changed before signing");
-  const { signature } = await wallet.signAndSendTransaction(transaction);
+  const signature = await signAndBroadcastThroughDevnet(connection, wallet, transaction);
   try {
     const result = await connection.confirmTransaction(
       { signature, blockhash, lastValidBlockHeight }, "confirmed"
