@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
+import OwnerManagementPanel from "./OwnerManagementPanel";
 
 type Wallet = {
   publicKey?: PublicKey | null;
@@ -222,6 +223,12 @@ export default function SelectedVaultDashboard() {
             <p><strong>Available:</strong> {preciseAmount(treasury.availableBaseUnits, treasury.decimals)}</p>
             <p style={{ color: "#94a3b8" }}>Amounts are shown in units of the selected vault's SPL token.</p>
           </section> : <p>Loading verified treasury…</p>}
+          {treasury && <OwnerManagementPanel
+            snapshot={treasury}
+            sessionOwner={session?.authenticated ? session.owner : ""}
+            agents={agents ?? []}
+            onConfirmed={refresh}
+          />}
           <section style={{ marginTop: 24, padding: 24, borderRadius: 12, background: "#172338" }}>
             <h2>Registered agents and task policies</h2>
             {agents === null && <p>Loading verified agents…</p>}
@@ -251,7 +258,7 @@ export default function SelectedVaultDashboard() {
           </p>
         </>
       )}
-      <p style={{ color: "#fbbf24" }}>Local-development read-only view. This page does not submit payments or change vault policies.</p>
+      <p style={{ color: "#fbbf24" }}>Local development only. Vault data is read-only; the explicit owner-signed Devnet management actions above can modify on-chain agent and task policies. No agent payment execution is exposed by this dashboard.</p>
     </main>
   );
 }
