@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
 import OwnerManagementPanel from "./OwnerManagementPanel";
+import OwnerSecurityPanel from "./OwnerSecurityPanel";
 
 type Wallet = {
   publicKey?: PublicKey | null;
@@ -223,6 +224,12 @@ export default function SelectedVaultDashboard() {
             <p><strong>Available:</strong> {preciseAmount(treasury.availableBaseUnits, treasury.decimals)}</p>
             <p style={{ color: "#94a3b8" }}>Amounts are shown in units of the selected vault's SPL token.</p>
           </section> : <p>Loading verified treasury…</p>}
+          {treasury && agents !== null && <OwnerSecurityPanel
+            snapshot={treasury}
+            sessionOwner={session?.authenticated ? session.owner : ""}
+            agents={agents}
+            onConfirmed={refresh}
+          />}
           {treasury && <OwnerManagementPanel
             snapshot={treasury}
             sessionOwner={session?.authenticated ? session.owner : ""}
