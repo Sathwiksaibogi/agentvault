@@ -217,3 +217,117 @@ test("sign-only flow rejects a wallet-modified message before broadcast", async 
   );
   assert.equal(sent, false);
 });
+
+
+test("wallet changes to a signed instruction are identified and never broadcast", async () => {
+  const { signAndBroadcastThroughDevnet } = await import("../src/owner-management");
+  const { Transaction } = await import("@solana/web3.js");
+  const owner = Keypair.generate();
+  const unsigned = new Transaction({
+    feePayer: owner.publicKey,
+    recentBlockhash: Keypair.generate().publicKey.toBase58(),
+  }).add(SystemProgram.transfer({
+    fromPubkey: owner.publicKey,
+    toPubkey: Keypair.generate().publicKey,
+    lamports: 1,
+  }));
+  let broadcast = false;
+  await assert.rejects(
+    () => signAndBroadcastThroughDevnet(
+      { async sendRawTransaction() { broadcast = true; return "unexpected"; } },
+      {
+        publicKey: owner.publicKey,
+        async connect() { return { publicKey: owner.publicKey }; },
+        async signAndSendTransaction() { throw new Error("wallet-side send disallowed"); },
+        async signTransaction(tx: Transaction) {
+          tx.instructions[0].data = Buffer.from([1, 2, 3]);
+          tx.sign(owner);
+          return tx;
+        },
+      },
+      unsigned,
+    ),
+    /modified transaction \(instruction 0 data\); nothing was broadcast/
+  );
+  assert.equal(broadcast, false);
+});
+
+test("wallet changes to the blockhash are identified and never broadcast", async () => {
+  const { signAndBroadcastThroughDevnet } = await import("../src/owner-management");
+  const { Transaction } = await import("@solana/web3.js");
+  const owner = Keypair.generate();
+  const unsigned = new Transaction({
+    feePayer: owner.publicKey,
+    recentBlockhash: Keypair.generate().publicKey.toBase58(),
+  }).add(SystemProgram.transfer({
+    fromPubkey: owner.publicKey,
+    toPubkey: Keypair.generate().publicKey,
+    lamports: 1,
+  }));
+  let broadcast = false;
+  await assert.rejects(
+    () => signAndBroadcastThroughDevnet(
+      { async sendRawTransaction() { broadcast = true; return "unexpected"; } },
+      {
+        publicKey: owner.publicKey,
+        async connect() { return { publicKey: owner.publicKey }; },
+        async signAndSendTransaction() { throw new Error("wallet-side send disallowed"); },
+        async signTransaction(tx: Transaction) {
+          tx.recentBlockhash = Keypair.generate().publicKey.toBase58();
+          tx.sign(owner);
+          return tx;
+        },
+      },
+      unsigned,
+    ),
+    /modified transaction \(recent blockhash\); nothing was broadcast/
+  );
+  assert.equal(broadcast, false);
+});
+
+
+test("Devnet owner policy transaction includes priority fee before Phantom signing", async () => {
+  const { ComputeBudgetProgram, Transaction } = await import("@solana/web3.js");
+  const { buildOwnerPolicyTransaction, signAndBroadcastThroughDevnet } = await import("../src/owner-management");
+  const owner = Keypair.generate();
+  const { instruction } = buildRegisterAgentInstruction({
+    owner: owner.publicKey,
+    vault: Keypair.generate().publicKey,
+    authority: Keypair.generate().publicKey,
+  });
+  const blockhash = Keypair.generate().publicKey.toBase58();
+  const unsigned = buildOwnerPolicyTransaction(owner.publicKey, blockhash, instruction);
+  assert.equal(unsigned.instructions.length, 3);
+  assert.deepEqual(unsigned.instructions.map(ix => ix.programId.toBase58()), [
+    ComputeBudgetProgram.programId.toBase58(),
+    ComputeBudgetProgram.programId.toBase58(),
+    DEFAULT_PROGRAM_ID.toBase58(),
+  ]);
+  assert.equal(unsigned.instructions[0].data.readUInt8(0), 2); // SetComputeUnitLimit
+  assert.equal(unsigned.instructions[0].data.readUInt32LE(1), 200_000);
+  assert.equal(unsigned.instructions[1].data.readUInt8(0), 3); // SetComputeUnitPrice
+  assert.equal(unsigned.instructions[1].data.readBigUInt64LE(1), BigInt(1_000));
+  const expectedMessage = Buffer.from(unsigned.serializeMessage());
+  let broadcasts = 0;
+  const wallet = {
+    publicKey: owner.publicKey,
+    async connect() { return { publicKey: owner.publicKey }; },
+    async signAndSendTransaction() { throw new Error("Wallet must not broadcast"); },
+    async signTransaction(tx: import("@solana/web3.js").Transaction) {
+      // Simulates a wallet that leaves explicitly pre-priced transactions alone.
+      assert.equal(tx.instructions.length, 3);
+      tx.sign(owner);
+      return tx;
+    },
+  };
+  const connection = {
+    async sendRawTransaction(raw: Buffer | Uint8Array | number[]) {
+      broadcasts += 1;
+      const decoded = Transaction.from(Buffer.from(raw));
+      assert.ok(Buffer.from(decoded.serializeMessage()).equals(expectedMessage));
+      return "devnet-confirmation-is-separate";
+    },
+  };
+  assert.equal(await signAndBroadcastThroughDevnet(connection, wallet, unsigned), "devnet-confirmation-is-separate");
+  assert.equal(broadcasts, 1);
+});

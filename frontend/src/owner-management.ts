@@ -5,6 +5,7 @@
  */
 import { Buffer } from "buffer";
 import {
+  ComputeBudgetProgram,
   Connection,
   PublicKey,
   SystemProgram,
@@ -223,13 +224,48 @@ export async function signAndBroadcastThroughDevnet(
   if (!unsigned.feePayer || !wallet.publicKey?.equals(unsigned.feePayer)) {
     throw new Error("Wallet changed before signing");
   }
-  const expectedMessage = Buffer.from(unsigned.serializeMessage());
+  // Capture the compiled message BEFORE handing the transaction to Phantom:
+  // the wallet may mutate the supplied Transaction object in place.
+  const expectedCompiled = unsigned.compileMessage();
+  const expectedMessage = Buffer.from(expectedCompiled.serialize());
+  const expectedPayer = unsigned.feePayer.toBase58();
   const signed = await wallet.signTransaction(unsigned);
   if (!unsigned.feePayer || !wallet.publicKey?.equals(unsigned.feePayer)) {
     throw new Error("Wallet changed during signing");
   }
   if (!Buffer.from(signed.serializeMessage()).equals(expectedMessage)) {
-    throw new Error("Wallet returned a modified transaction; nothing was broadcast");
+    // Do NOT relax the message-equality guard; no changed transaction may be broadcast.
+    const actual = signed.compileMessage();
+    const changed: string[] = [];
+    if (actual.recentBlockhash !== expectedCompiled.recentBlockhash) {
+      changed.push("recent blockhash");
+    }
+    if (signed.feePayer?.toBase58() !== expectedPayer) changed.push("fee payer");
+    if (
+      actual.header.numRequiredSignatures !== expectedCompiled.header.numRequiredSignatures ||
+      actual.header.numReadonlySignedAccounts !== expectedCompiled.header.numReadonlySignedAccounts ||
+      actual.header.numReadonlyUnsignedAccounts !== expectedCompiled.header.numReadonlyUnsignedAccounts
+    ) changed.push("signer/writable flags");
+    if (
+      actual.accountKeys.length !== expectedCompiled.accountKeys.length ||
+      actual.accountKeys.some((key, i) => !key.equals(expectedCompiled.accountKeys[i]))
+    ) changed.push("account keys/order");
+    if (actual.instructions.length !== expectedCompiled.instructions.length) {
+      changed.push("instruction count");
+    } else {
+      for (let i = 0; i < actual.instructions.length; i++) {
+        const a = actual.instructions[i];
+        const b = expectedCompiled.instructions[i];
+        if (a.programIdIndex !== b.programIdIndex) changed.push(`instruction ${i} program`);
+        if (a.accounts.join(",") !== b.accounts.join(",")) changed.push(`instruction ${i} account metas`);
+        if (a.data !== b.data) changed.push(`instruction ${i} data`);
+      }
+    }
+    const detail = changed.length > 0 ? changed.join(", ") : "compiled message bytes";
+    throw new Error(
+      `Wallet returned a modified transaction (${detail}); nothing was broadcast. ` +
+      "Check Phantom's selected Solana network before trying again."
+    );
   }
   // serialize() verifies all required Ed25519 signatures before network submission.
   const raw = signed.serialize();
@@ -247,6 +283,22 @@ export async function signAndBroadcastThroughDevnet(
   }
 }
 
+/** Pre-populate compute-budget instructions so Phantom needn't alter signed message.
+ * The explicit price is 1,000 micro-lamports/CU and the limit is 200,000 CU,
+ * giving a priority fee of 200 lamports for this Devnet owner policy transaction.
+ */
+export function buildOwnerPolicyTransaction(
+  owner: PublicKey,
+  blockhash: string,
+  instruction: TransactionInstruction
+): Transaction {
+  return new Transaction({ feePayer: owner, recentBlockhash: blockhash }).add(
+    ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000 }),
+    instruction,
+  );
+}
+
 async function sendAndVerify(args: {
   connection: Connection;
   wallet: OwnerManagementWallet;
@@ -259,8 +311,7 @@ async function sendAndVerify(args: {
   const existing = await connection.getAccountInfo(createdPda, "confirmed");
   if (existing) throw new Error("Account already exists; refresh the dashboard");
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
-  const transaction = new Transaction({ feePayer: owner, recentBlockhash: blockhash });
-  transaction.add(instruction);
+  const transaction = buildOwnerPolicyTransaction(owner, blockhash, instruction);
   if (!wallet.publicKey?.equals(owner)) throw new Error("Wallet changed before signing");
   const signature = await signAndBroadcastThroughDevnet(connection, wallet, transaction);
   try {
