@@ -118,6 +118,7 @@ export default function FreshOwnerOnboarding() {
               <div>Mint: <code>{vault.tokenMint}</code></div>
               <div>Treasury: <code>{vault.treasury}</code></div>
               <div>Reserved base units: {vault.totalReservedBaseUnits}</div>
+              <div><a style={{ color: "#93c5fd" }} href={`/vault?vault=${encodeURIComponent(vault.address)}`}>Open your treasury dashboard</a></div>
             </li>)}
           </ul>}
       </section>}
@@ -144,7 +145,7 @@ export default function FreshOwnerOnboarding() {
       {error && <p role="alert" style={{ color: "#fca5a5", marginTop: 20 }}>{error}</p>}
       {success && <p role="status" style={{ color: "#86efac", marginTop: 20 }}>{success}</p>}
       <p style={{ color: "#94a3b8", fontSize: 13, marginTop: 32 }}>
-        This milestone covers on-chain onboarding only. The existing dashboard API is scoped to its configured demo vault; new vaults cannot yet be opened there. Per-vault sessions and data isolation come next.
+        You can now open your own vault's authenticated read-only treasury. Agent, task, approval and activity views remain disabled until their per-vault APIs are implemented.
       </p>
     </main>
   );

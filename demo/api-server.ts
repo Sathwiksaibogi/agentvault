@@ -4,6 +4,7 @@ import { strict as assert } from "node:assert";
 import { createServer } from "node:http";
 import { createApiHandler } from "./api-handler";
 import { createOwnerDashboardSessionHandler } from "./owner-dashboard-session";
+import { createSelectedVaultSessionHandler } from "./selected-vault-dashboard-session";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createBoundedRpcFetch } from "./api-rpc-security";
@@ -449,13 +450,20 @@ async function main(): Promise<void> {
 
         cachedRead,
       });
-    const server = createServer(createOwnerDashboardSessionHandler({
+    const legacyDashboardHandler = createOwnerDashboardSessionHandler({
       apiHandler,
       ownerPublicKey: state.owner,
       vaultPublicKey: state.vault,
       ownerApiToken: API_CREDENTIALS.ownerToken,
       frontendOrigin: "http://127.0.0.1:5173",
       upstreamOrigin: `http://${HOST}:${PORT}`,
+    });
+    const server = createServer(createSelectedVaultSessionHandler({
+      fallbackHandler: legacyDashboardHandler,
+      rpc: connection,
+      network: NETWORK,
+      expectedGenesisHash: state.genesisHash,
+      frontendOrigin: "http://127.0.0.1:5173",
     }));
     configureApiHttpServer(server);
 
