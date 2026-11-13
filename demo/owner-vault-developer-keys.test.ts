@@ -45,12 +45,12 @@ function makeFixture(seed: number, id: number) {
   owner.toBuffer().copy(vaultData, 8);
   mint.toBuffer().copy(vaultData, 40);
   vaultData.writeBigUInt64LE(BigInt(id), 72);
-  vaultData.writeBigUInt64LE(250_000n, 80);
+  vaultData.writeBigUInt64LE(BigInt("250000"), 80);
   vaultData[89] = bump;
   const treasuryData = Buffer.alloc(165);
   mint.toBuffer().copy(treasuryData, 0);
   vault.toBuffer().copy(treasuryData, 32);
-  treasuryData.writeBigUInt64LE(1_000_000n, 64);
+  treasuryData.writeBigUInt64LE(BigInt("1000000"), 64);
   treasuryData[108] = 1;
   const account = (data: Buffer, program: PublicKey): AccountInfo<Buffer> => ({
     data,
