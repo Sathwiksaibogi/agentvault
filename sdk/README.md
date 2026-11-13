@@ -1,6 +1,6 @@
-# AgentVault TypeScript SDK — 7.7A.2
+# AgentVault TypeScript SDK — 7.7D.2C.3
 
-**Status:** private, server-side, read-only foundation. This is not a published or production-ready SDK. It wraps the existing treasury, agent, workflow, and activity read endpoints; it does not construct transactions, issue API keys, approve payments, or bypass finality quarantine.
+**Status:** private server-side SDK, not published or production-ready. It supports treasury/agent/workflow/activity reads and Devnet Model A payment-intent submission and status lookup. It cannot construct transactions, issue API keys, approve payments, or bypass finality quarantine.
 
 ## Build and test (from the AgentVault repository root)
 
@@ -33,7 +33,7 @@ Do **not** put a developer or owner Bearer token in React/Vite client code, publ
 
 The money and nonce fields already represented as base-unit decimal strings by the frontend stay as strings in this SDK. The SDK validates all returned JSON shapes before returning typed data.
 
-Next: test the SDK against the current running API with permitted owner/developer roles, then integrate safe owner dashboard reads. Write operations remain a separate, explicitly reviewed slice. All payment execution and finality release gates remain unchanged.
+Next: integrate authenticated payment-intent intake with a safe agent-discovery mechanism. All payment execution and finality release gates remain unchanged.
 
 ## Workflow and activity reads
 
@@ -80,3 +80,30 @@ through the existing backend code (not a fake `fetch` implementation).
 This test does **not** assert live Devnet RPC, PostgreSQL integration, payment
 execution, or finality acceptance. It neither starts the production server
 nor reads real credentials or submits transactions.
+
+## Model A developer payment-intent intake (7.7D.2C.3)
+
+The SDK now supports `submitModelAPaymentIntent(input)` and
+`getModelAPaymentIntent(requestId)` for trusted **server-side** integrations.
+These use the explicit, short-lived `payments:request` developer API key, not an
+owner session or a read-only `activity:read` credential. The API determines the
+vault from that credential; request JSON has no vault parameter.
+
+```ts
+const receipt = await client.submitModelAPaymentIntent({
+  requestId: "invoice_001",
+  agentAuthority: agentPublicKey,
+  taskId: "2",
+  recipient: authorizedRecipient,
+  amountBaseUnits: "1000",
+  expiresAtUnix: expirationUnixSeconds,
+});
+const stored = await client.getModelAPaymentIntent(receipt.requestId);
+console.log(receipt.status, stored.status); // received received — NOT paid
+```
+
+**Do not automatically retry POST on transport failure.** First inspect the
+intent status by request ID, then choose whether a literal, identical replay is
+appropriate. The storage API returns HTTP 409 for changed terms with the same
+request ID. These methods do not notify the agent or broadcast transactions.
+The inbox is filesystem-backed for local development and is not production-grade.

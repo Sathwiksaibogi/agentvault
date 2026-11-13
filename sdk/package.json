@@ -1,10 +1,12 @@
 {
   "name": "@agentvault/sdk",
   "version": "0.1.0",
-  "description": "Server-side TypeScript client for AgentVault's existing read-only API",
+  "description": "Server-side TypeScript client for AgentVault reads and Devnet Model A payment-intent intake",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -13,7 +15,10 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "node --test test/*.test.mjs"

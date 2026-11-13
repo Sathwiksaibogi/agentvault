@@ -2,15 +2,20 @@ import type {
   ActivityEntry,
   Agent,
   AgentVaultClientOptions,
+  ModelAPaymentIntentAccepted,
+  ModelAPaymentIntentInput,
+  StoredModelAPaymentIntent,
   Treasury,
   WorkflowStatus,
 } from "./types.js";
+import {
+  assertModelAPaymentIntentInput,
+  isModelAPaymentIntentAccepted,
+  isStoredModelAPaymentIntent,
+} from "./model-a-payment.js";
 
 export class AgentVaultHttpError extends Error {
-  constructor(
-    public readonly path: string,
-    public readonly status: number,
-  ) {
+  constructor(public readonly path: string, public readonly status: number) {
     super(`AgentVault API returned HTTP ${status} for ${path}`);
     this.name = "AgentVaultHttpError";
   }
@@ -99,7 +104,8 @@ function isWorkflowStatus(value: unknown): value is WorkflowStatus {
     !isObject(value.approval) ||
     !isObject(value.aiDecision) ||
     !isObject(value.execution)
-  ) return false;
+  )
+    return false;
   const { approval, aiDecision, execution } = value;
   const payment = execution.payment;
   return (
@@ -155,23 +161,36 @@ export class AgentVaultClient {
     }
 
     const isLoopback = ["localhost", "127.0.0.1", "[::1]"].includes(
-      url.hostname.toLowerCase(),
+      url.hostname.toLowerCase()
     );
     if (
-      (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopback)) ||
+      (url.protocol !== "https:" &&
+        !(url.protocol === "http:" && isLoopback)) ||
       url.username ||
       url.password ||
       url.search ||
       url.hash ||
       url.pathname !== "/"
     ) {
-      throw new TypeError("baseUrl must be an HTTPS origin or a local-loopback HTTP origin");
+      throw new TypeError(
+        "baseUrl must be an HTTPS origin or a local-loopback HTTP origin"
+      );
     }
-    if (typeof options.token !== "string" || !options.token || /\s/.test(options.token)) {
-      throw new TypeError("token must be a non-empty Bearer token without whitespace");
+    if (
+      typeof options.token !== "string" ||
+      !options.token ||
+      /\s/.test(options.token)
+    ) {
+      throw new TypeError(
+        "token must be a non-empty Bearer token without whitespace"
+      );
     }
     const timeoutMs = options.timeoutMs ?? 10_000;
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) {
+    if (
+      !Number.isSafeInteger(timeoutMs) ||
+      timeoutMs < 1 ||
+      timeoutMs > 120_000
+    ) {
       throw new RangeError("timeoutMs must be an integer from 1 to 120000");
     }
 
@@ -193,7 +212,11 @@ export class AgentVaultClient {
   async listAgents(): Promise<Agent[]> {
     const path = "/api/agents";
     const body = await this.getJson(path);
-    if (!isObject(body) || !Array.isArray(body.agents) || !body.agents.every(isAgent)) {
+    if (
+      !isObject(body) ||
+      !Array.isArray(body.agents) ||
+      !body.agents.every(isAgent)
+    ) {
       throw new AgentVaultProtocolError(path);
     }
     return body.agents;
@@ -240,12 +263,74 @@ export class AgentVaultClient {
     return body.activity;
   }
 
+  /**
+   * Submit a Model A payment INTENT with an explicit payments:request API key.
+   * This never approves, dispatches, signs, executes, or broadcasts a payment.
+   * A network failure is ambiguous: do not automatically retry the POST.
+   */
+  async submitModelAPaymentIntent(
+    request: ModelAPaymentIntentInput
+  ): Promise<ModelAPaymentIntentAccepted> {
+    assertModelAPaymentIntentInput(request);
+    const path = "/api/model-a/payment-intents";
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.origin}${path}`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.token}`,
+        },
+        body: JSON.stringify(request),
+        redirect: "error",
+        cache: "no-store",
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch {
+      throw new AgentVaultTransportError(path);
+    }
+    if (!response.ok) throw new AgentVaultHttpError(path, response.status);
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new AgentVaultProtocolError(path);
+    }
+    if (
+      !isModelAPaymentIntentAccepted(body, request.requestId, response.status)
+    ) {
+      throw new AgentVaultProtocolError(path);
+    }
+    return body;
+  }
+
+  /** Inspect only a previously received Model A intent. Does not imply payment. */
+  async getModelAPaymentIntent(
+    requestId: string
+  ): Promise<StoredModelAPaymentIntent> {
+    if (!isRequestId(requestId)) {
+      throw new TypeError("requestId must match [a-zA-Z0-9_-]{8,64}");
+    }
+    const path = `/api/model-a/payment-intents/${encodeURIComponent(
+      requestId
+    )}`;
+    const body = await this.getJson(path);
+    if (!isStoredModelAPaymentIntent(body, requestId)) {
+      throw new AgentVaultProtocolError(path);
+    }
+    return body;
+  }
+
   private async getJson(path: string): Promise<unknown> {
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.origin}${path}`, {
         method: "GET",
-        headers: { Accept: "application/json", Authorization: `Bearer ${this.token}` },
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${this.token}`,
+        },
         redirect: "error",
         cache: "no-store",
         signal: AbortSignal.timeout(this.timeoutMs),

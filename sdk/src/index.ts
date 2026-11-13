@@ -8,6 +8,9 @@ export type {
   ActivityEntry,
   Agent,
   AgentVaultClientOptions,
+  ModelAPaymentIntentAccepted,
+  ModelAPaymentIntentInput,
+  StoredModelAPaymentIntent,
   Treasury,
   WorkflowStatus,
 } from "./types.js";
