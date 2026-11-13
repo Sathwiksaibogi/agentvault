@@ -154,6 +154,65 @@ test("an authenticated agent discovers only its own vault's unexpired requests",
   assert.match(result.json.notice as string, /not queued/);
 });
 
+test("two authorized agents have isolated HTTP inboxes", async () => {
+  const f = setup();
+
+  // Both agents use the same vault, recipient and task ID.
+  // Isolation must depend on agent authority, not those fields.
+  f.add({ id: "request_agent_A", agent: f.agentA });
+  f.add({ id: "request_agent_B", agent: f.agentB });
+
+  const authorized = new Set([
+    f.agentA.publicKey.toBase58(),
+    f.agentB.publicKey.toBase58(),
+  ]);
+
+  const http = await start(f.dir, {
+    verifyAgent: async ({ vault, agentAuthority }) => {
+      if (vault !== f.vaultA || !authorized.has(agentAuthority)) {
+        throw new Error("Unauthorized agent");
+      }
+    },
+  });
+
+  // Both agents request independent challenges.
+  const [challengeA, challengeB] = await Promise.all([
+    http.challenge(f.vaultA, f.agentA),
+    http.challenge(f.vaultA, f.agentB),
+  ]);
+
+  // Poll concurrently to exercise challenge and scope isolation.
+  const [responseA, responseB] = await Promise.all([
+    http.poll(challengeA, f.agentA),
+    http.poll(challengeB, f.agentB),
+  ]);
+
+  assert.equal(responseA.status, 200);
+  assert.equal(responseB.status, 200);
+
+  assert.equal(responseA.json.vault, f.vaultA);
+  assert.equal(responseB.json.vault, f.vaultA);
+
+  assert.equal(responseA.json.agentAuthority, f.agentA.publicKey.toBase58());
+  assert.equal(responseB.json.agentAuthority, f.agentB.publicKey.toBase58());
+
+  const requestIds = (json: Record<string, unknown>) => {
+    assert.ok(Array.isArray(json.items));
+    return (
+      json.items as {
+        request: { requestId: string };
+      }[]
+    ).map((item) => item.request.requestId);
+  };
+
+  assert.deepEqual(requestIds(responseA.json), ["request_agent_A"]);
+  assert.deepEqual(requestIds(responseB.json), ["request_agent_B"]);
+
+  // Challenges are single-use, including after successful polling.
+  assert.equal((await http.poll(challengeA, f.agentA)).status, 401);
+  assert.equal((await http.poll(challengeB, f.agentB)).status, 401);
+});
+
 test("same signed agent authority is restricted to the signed vault", async () => {
   const f = setup();
   f.add({ id: "request_A001" });

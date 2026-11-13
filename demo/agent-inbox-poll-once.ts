@@ -111,10 +111,17 @@ async function main(): Promise<void> {
   console.log("READ ONLY: no request has been approved, claimed or paid.");
 }
 
-main().catch(() => {
-  // Avoid echoing low-level errors which can include paths or sensitive data.
-  console.error(
-    "Agent inbox polling failed. Check Devnet, agent authority, vault and backend logs."
-  );
+main().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : "";
+
+  if (/^Agent inbox (challenge|poll) HTTP [1-5][0-9][0-9]$/.test(message)) {
+    console.error(message);
+  } else {
+    const category = error instanceof Error ? error.name : "unknown";
+    console.error(
+      `Agent inbox polling failed (${category}). Check backend logs.`
+    );
+  }
+
   process.exitCode = 1;
 });
