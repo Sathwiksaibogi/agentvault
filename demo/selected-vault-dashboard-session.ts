@@ -10,9 +10,15 @@
  * distributed rate limiter). Never expose it to the public internet.
  */
 import { createHash, randomBytes } from "node:crypto";
-import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
+import type {
+  IncomingMessage,
+  RequestListener,
+  ServerResponse,
+} from "node:http";
 import { PublicKey, type AccountInfo } from "@solana/web3.js";
 import nacl from "tweetnacl";
+import { createSelectedVaultDeveloperKeyHandler } from "./owner-vault-developer-keys";
+import type { DeveloperApiKeyRepository } from "./api-key-repository";
 import {
   verifyOwnerVaultOnChain,
   type ConfirmedAccountReader,
@@ -25,7 +31,9 @@ const MAX_CHALLENGES = 128;
 const MAX_SESSIONS = 128;
 const CHALLENGE_MS = 90_000;
 const SESSION_MS = 15 * 60_000;
-const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const TOKEN_PROGRAM = new PublicKey(
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+);
 const AGENTVAULT_PROGRAM = "BVhTPuAK9birmLeYBeAuBMusEdYW9oFjQeJeMU9hNX9d";
 
 type Challenge = {
@@ -38,8 +46,10 @@ type Session = { owner: string; vault: string; expiresAt: number };
 
 export interface SelectedVaultRpc extends ConfirmedAccountReader {
   getGenesisHash(): Promise<string>;
-  getAccountInfo(address: PublicKey, commitment: "confirmed"):
-    Promise<AccountInfo<Buffer> | null>;
+  getAccountInfo(
+    address: PublicKey,
+    commitment: "confirmed"
+  ): Promise<AccountInfo<Buffer> | null>;
 }
 
 export interface SelectedVaultSessionOptions {
@@ -48,7 +58,13 @@ export interface SelectedVaultSessionOptions {
   network: "localnet" | "devnet";
   expectedGenesisHash: string;
   frontendOrigin: string;
-  readScopedAgents?: (verified: VerifiedOwnerVault) => Promise<SelectedVaultAgentsResponse>;
+  developerKeyRepository?: Pick<
+    DeveloperApiKeyRepository,
+    "create" | "listByPrincipal" | "revokeForVault"
+  >;
+  readScopedAgents?: (
+    verified: VerifiedOwnerVault
+  ) => Promise<SelectedVaultAgentsResponse>;
   now?: () => number;
 }
 
@@ -69,7 +85,8 @@ function sendJson(
 }
 
 function canonicalPubkey(value: unknown): string | null {
-  if (typeof value !== "string" || value.length < 32 || value.length > 44) return null;
+  if (typeof value !== "string" || value.length < 32 || value.length > 44)
+    return null;
   try {
     return new PublicKey(value).toBase58() === value ? value : null;
   } catch {
@@ -77,8 +94,14 @@ function canonicalPubkey(value: unknown): string | null {
   }
 }
 
-async function jsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
-  if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(String(request.headers["content-type"] ?? ""))) {
+async function jsonBody(
+  request: IncomingMessage
+): Promise<Record<string, unknown>> {
+  if (
+    !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(
+      String(request.headers["content-type"] ?? "")
+    )
+  ) {
     throw new Error("Invalid content type");
   }
   const parts: Buffer[] = [];
@@ -98,7 +121,8 @@ async function jsonBody(request: IncomingMessage): Promise<Record<string, unknow
 
 function sessionCookie(request: IncomingMessage): string | null {
   if (typeof request.headers.cookie !== "string") return null;
-  const parts = request.headers.cookie.split(";")
+  const parts = request.headers.cookie
+    .split(";")
     .map((s) => s.trim())
     .filter((s) => s.startsWith(`${COOKIE_NAME}=`));
   if (parts.length !== 1) return null;
@@ -114,13 +138,16 @@ function digest(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export function createSelectedVaultSessionHandler(options: SelectedVaultSessionOptions): RequestListener {
+export function createSelectedVaultSessionHandler(
+  options: SelectedVaultSessionOptions
+): RequestListener {
   const {
     fallbackHandler,
     rpc,
     network,
     expectedGenesisHash,
     frontendOrigin,
+    developerKeyRepository,
     readScopedAgents,
     now = Date.now,
   } = options;
@@ -134,7 +161,10 @@ export function createSelectedVaultSessionHandler(options: SelectedVaultSessionO
   const sessions = new Map<string, Session>();
 
   async function requireDevnet(): Promise<void> {
-    if (network !== "devnet" || (await rpc.getGenesisHash()) !== expectedGenesisHash) {
+    if (
+      network !== "devnet" ||
+      (await rpc.getGenesisHash()) !== expectedGenesisHash
+    ) {
       throw new Error("Configured Devnet chain mismatch");
     }
   }
@@ -160,6 +190,23 @@ export function createSelectedVaultSessionHandler(options: SelectedVaultSessionO
     return entry;
   }
 
+  // A signed READ-ONLY login alone cannot authorize key issuance/revocation.
+  // These routes demand a separate signature of the exact credential action.
+  const developerKeyHandler = createSelectedVaultDeveloperKeyHandler({
+    repository: developerKeyRepository,
+    frontendOrigin,
+    expectedGenesisHash,
+    now,
+    verifyOwner: async ({ owner, vault }) => {
+      await requireDevnet();
+      await verifyOwnerVaultOnChain({
+        rpc,
+        ownerAddress: owner,
+        vaultAddress: vault,
+      });
+    },
+  });
+
   return (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     const path = url.pathname;
@@ -170,21 +217,30 @@ export function createSelectedVaultSessionHandler(options: SelectedVaultSessionO
     prune();
 
     if (path === "/owner-vault/auth/challenge") {
-      if (req.method !== "GET") return void sendJson(res, 405, { error: "Method not allowed" });
-      if (Array.from(url.searchParams.keys()).length !== 2 ||
-          !url.searchParams.has("owner") || !url.searchParams.has("vault")) {
+      if (req.method !== "GET")
+        return void sendJson(res, 405, { error: "Method not allowed" });
+      if (
+        Array.from(url.searchParams.keys()).length !== 2 ||
+        !url.searchParams.has("owner") ||
+        !url.searchParams.has("vault")
+      ) {
         return void sendJson(res, 400, { error: "Invalid vault selection" });
       }
       const owner = canonicalPubkey(url.searchParams.get("owner"));
       const vault = canonicalPubkey(url.searchParams.get("vault"));
-      if (!owner || !vault) return void sendJson(res, 400, { error: "Invalid vault selection" });
+      if (!owner || !vault)
+        return void sendJson(res, 400, { error: "Invalid vault selection" });
       if (challenges.size >= MAX_CHALLENGES) {
         return void sendJson(res, 429, { error: "Too many challenges" });
       }
       void (async () => {
         try {
           await requireDevnet();
-          await verifyOwnerVaultOnChain({ rpc, ownerAddress: owner, vaultAddress: vault });
+          await verifyOwnerVaultOnChain({
+            rpc,
+            ownerAddress: owner,
+            vaultAddress: vault,
+          });
           const nonce = randomBytes(24).toString("hex");
           const expiresAt = now() + CHALLENGE_MS;
           const message = [
@@ -200,99 +256,201 @@ export function createSelectedVaultSessionHandler(options: SelectedVaultSessionO
             "Purpose: read-only selected-vault session; not a payment approval",
           ].join("\n");
           challenges.set(nonce, { owner, vault, expiresAt, message });
-          sendJson(res, 200, { ownerPublicKey: owner, vaultPublicKey: vault, nonce, message, expiresAt });
+          sendJson(res, 200, {
+            ownerPublicKey: owner,
+            vaultPublicKey: vault,
+            nonce,
+            message,
+            expiresAt,
+          });
         } catch {
-          sendJson(res, 403, { error: "Vault selection unavailable or unauthorized" });
+          sendJson(res, 403, {
+            error: "Vault selection unavailable or unauthorized",
+          });
         }
       })();
       return;
     }
 
     if (path === "/owner-vault/auth/session") {
-      if (req.method !== "GET") return void sendJson(res, 405, { error: "Method not allowed" });
-      if (url.search) return void sendJson(res, 400, { error: "Unexpected query" });
+      if (req.method !== "GET")
+        return void sendJson(res, 405, { error: "Method not allowed" });
+      if (url.search)
+        return void sendJson(res, 400, { error: "Unexpected query" });
       const session = currentSession(req);
-      return void sendJson(res, 200, session ?
-        { authenticated: true, owner: session.owner, vault: session.vault } :
-        { authenticated: false });
+      return void sendJson(
+        res,
+        200,
+        session
+          ? { authenticated: true, owner: session.owner, vault: session.vault }
+          : { authenticated: false }
+      );
     }
 
-    if (path === "/owner-vault/auth/login" || path === "/owner-vault/auth/logout") {
-      if (req.method !== "POST") return void sendJson(res, 405, { error: "Method not allowed" });
-      if (url.search) return void sendJson(res, 400, { error: "Unexpected query" });
-      if (req.headers.origin !== frontendOrigin) return void sendJson(res, 403, { error: "Forbidden origin" });
+    if (
+      path === "/owner-vault/auth/login" ||
+      path === "/owner-vault/auth/logout"
+    ) {
+      if (req.method !== "POST")
+        return void sendJson(res, 405, { error: "Method not allowed" });
+      if (url.search)
+        return void sendJson(res, 400, { error: "Unexpected query" });
+      if (req.headers.origin !== frontendOrigin)
+        return void sendJson(res, 403, { error: "Forbidden origin" });
       if (path.endsWith("/logout")) {
         const token = sessionCookie(req);
         if (token) sessions.delete(digest(token));
-        return void sendJson(res, 200, { authenticated: false }, { "Set-Cookie": cookie("", 0) });
+        return void sendJson(
+          res,
+          200,
+          { authenticated: false },
+          { "Set-Cookie": cookie("", 0) }
+        );
       }
       void (async () => {
         let body: Record<string, unknown>;
-        try { body = await jsonBody(req); } catch {
+        try {
+          body = await jsonBody(req);
+        } catch {
           return void sendJson(res, 400, { error: "Invalid login request" });
         }
         const { nonce, publicKey, vault, signature } = body;
-        if (typeof nonce !== "string" || !/^[a-f0-9]{48}$/.test(nonce) ||
-            !canonicalPubkey(publicKey) || !canonicalPubkey(vault) ||
-            typeof signature !== "string" || signature.length > 128) {
+        if (
+          typeof nonce !== "string" ||
+          !/^[a-f0-9]{48}$/.test(nonce) ||
+          !canonicalPubkey(publicKey) ||
+          !canonicalPubkey(vault) ||
+          typeof signature !== "string" ||
+          signature.length > 128
+        ) {
           return void sendJson(res, 401, { error: "Invalid owner signature" });
         }
         const challenge = challenges.get(nonce);
         challenges.delete(nonce); // replay fails even when verification fails
-        if (!challenge || challenge.expiresAt <= now() ||
-            publicKey !== challenge.owner || vault !== challenge.vault) {
+        if (
+          !challenge ||
+          challenge.expiresAt <= now() ||
+          publicKey !== challenge.owner ||
+          vault !== challenge.vault
+        ) {
           return void sendJson(res, 401, { error: "Invalid owner signature" });
         }
         const bytes = Buffer.from(signature, "base64");
-        if (bytes.length !== 64 || bytes.toString("base64") !== signature ||
-            !nacl.sign.detached.verify(Buffer.from(challenge.message), bytes, new PublicKey(challenge.owner).toBytes())) {
+        if (
+          bytes.length !== 64 ||
+          bytes.toString("base64") !== signature ||
+          !nacl.sign.detached.verify(
+            Buffer.from(challenge.message),
+            bytes,
+            new PublicKey(challenge.owner).toBytes()
+          )
+        ) {
           return void sendJson(res, 401, { error: "Invalid owner signature" });
         }
         try {
           await requireDevnet();
-          await verifyOwnerVaultOnChain({ rpc, ownerAddress: challenge.owner, vaultAddress: challenge.vault });
+          await verifyOwnerVaultOnChain({
+            rpc,
+            ownerAddress: challenge.owner,
+            vaultAddress: challenge.vault,
+          });
         } catch {
-          return void sendJson(res, 403, { error: "Vault authorization unavailable" });
+          return void sendJson(res, 403, {
+            error: "Vault authorization unavailable",
+          });
         }
-        if (sessions.size >= MAX_SESSIONS) return void sendJson(res, 429, { error: "Too many sessions" });
+        if (sessions.size >= MAX_SESSIONS)
+          return void sendJson(res, 429, { error: "Too many sessions" });
         const prior = sessionCookie(req);
         if (prior) sessions.delete(digest(prior));
         const token = randomBytes(32).toString("hex");
-        sessions.set(digest(token), { owner: challenge.owner, vault: challenge.vault, expiresAt: now() + SESSION_MS });
-        sendJson(res, 200, { authenticated: true, owner: challenge.owner, vault: challenge.vault },
-          { "Set-Cookie": cookie(token, SESSION_MS / 1000) });
+        sessions.set(digest(token), {
+          owner: challenge.owner,
+          vault: challenge.vault,
+          expiresAt: now() + SESSION_MS,
+        });
+        sendJson(
+          res,
+          200,
+          {
+            authenticated: true,
+            owner: challenge.owner,
+            vault: challenge.vault,
+          },
+          { "Set-Cookie": cookie(token, SESSION_MS / 1000) }
+        );
       })().catch(() => {
-        if (!res.headersSent) sendJson(res, 503, { error: "Login unavailable" });
+        if (!res.headersSent)
+          sendJson(res, 503, { error: "Login unavailable" });
+      });
+      return;
+    }
+
+    if (
+      path === "/owner-vault/api/developer-keys" ||
+      path.startsWith("/owner-vault/api/developer-keys/")
+    ) {
+      const session = currentSession(req);
+      const token = session ? sessionCookie(req) : null;
+      void developerKeyHandler(
+        req,
+        res,
+        session,
+        token ? digest(token) : null
+      ).catch(() => {
+        if (!res.headersSent) {
+          sendJson(res, 503, { error: "Credential service unavailable" });
+        }
       });
       return;
     }
 
     if (path.startsWith("/owner-vault/api/")) {
-      if (req.method !== "GET") return void sendJson(res, 405, { error: "Read-only endpoint" });
-      if (url.search || (path !== "/owner-vault/api/treasury" && path !== "/owner-vault/api/agents")) {
+      if (req.method !== "GET")
+        return void sendJson(res, 405, { error: "Read-only endpoint" });
+      if (
+        url.search ||
+        (path !== "/owner-vault/api/treasury" &&
+          path !== "/owner-vault/api/agents")
+      ) {
         return void sendJson(res, 404, { error: "Endpoint not found" });
       }
       const session = currentSession(req);
-      if (!session) return void sendJson(res, 401, { error: "Owner session required" });
+      if (!session)
+        return void sendJson(res, 401, { error: "Owner session required" });
       void (async () => {
         try {
           await requireDevnet();
           const verified = await verifyOwnerVaultOnChain({
-            rpc, ownerAddress: session.owner, vaultAddress: session.vault,
+            rpc,
+            ownerAddress: session.owner,
+            vaultAddress: session.vault,
           });
           if (path === "/owner-vault/api/agents") {
-            if (!readScopedAgents) throw new Error("Scoped agent reader unavailable");
+            if (!readScopedAgents)
+              throw new Error("Scoped agent reader unavailable");
             const data = await readScopedAgents(verified);
-            if (data.network !== "devnet" || data.owner !== verified.owner ||
-                data.vault !== verified.vault) {
+            if (
+              data.network !== "devnet" ||
+              data.owner !== verified.owner ||
+              data.vault !== verified.vault
+            ) {
               throw new Error("Scoped agent reader returned a different vault");
             }
             sendJson(res, 200, data);
             return;
           }
-          const mintInfo = await rpc.getAccountInfo(new PublicKey(verified.mint), "confirmed");
-          if (!mintInfo || mintInfo.executable || !mintInfo.owner.equals(TOKEN_PROGRAM) ||
-              mintInfo.data.length !== 82 || mintInfo.data[45] !== 1) {
+          const mintInfo = await rpc.getAccountInfo(
+            new PublicKey(verified.mint),
+            "confirmed"
+          );
+          if (
+            !mintInfo ||
+            mintInfo.executable ||
+            !mintInfo.owner.equals(TOKEN_PROGRAM) ||
+            mintInfo.data.length !== 82 ||
+            mintInfo.data[45] !== 1
+          ) {
             throw new Error("Invalid selected-vault mint");
           }
           const balance = BigInt(verified.treasuryBalanceBaseUnits);

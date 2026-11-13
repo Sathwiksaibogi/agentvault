@@ -467,6 +467,7 @@ async function main(): Promise<void> {
       network: NETWORK,
       expectedGenesisHash: state.genesisHash,
       frontendOrigin: "http://127.0.0.1:5173",
+      developerKeyRepository: database.repository,
       readScopedAgents: async (verified) => {
         // Anchor .all() returns only program-owned, discriminator-decoded
         // accounts of the requested type. Never read demo agent definitions.
