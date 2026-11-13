@@ -72,7 +72,8 @@ export async function listManagedDeveloperApiKeys(
         record.vaults[0] === vault &&
         Array.isArray(record.scopes) &&
         record.scopes.length === 1 &&
-        record.scopes[0] === "activity:read"
+        (record.scopes[0] === "activity:read" ||
+          record.scopes[0] === "payments:request")
     )
     .map((record) => ({
       keyId: record.keyId,

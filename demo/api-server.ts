@@ -3,6 +3,8 @@ import BN from "bn.js";
 import { strict as assert } from "node:assert";
 import { createServer } from "node:http";
 import { createApiHandler } from "./api-handler";
+import { createModelAPaymentHttpHandler } from "./model-a-payment-http";
+import { verifyModelAPaymentIntentPolicy } from "./model-a-payment-policy";
 import { createOwnerDashboardSessionHandler } from "./owner-dashboard-session";
 import { createSelectedVaultSessionHandler } from "./selected-vault-dashboard-session";
 import { projectVerifiedVaultAgentsAndTasks } from "./selected-vault-agent-reader";
@@ -434,23 +436,23 @@ async function main(): Promise<void> {
     await verifyApiDatabase(database);
 
     const apiHandler = createApiHandler({
-        network: NETWORK,
-        runtimeVault: state.vault,
-        credentials: API_CREDENTIALS,
+      network: NETWORK,
+      runtimeVault: state.vault,
+      credentials: API_CREDENTIALS,
 
-        lookupDeveloperKey: (keyId) => database.repository.findById(keyId),
-        managementRepository: database.repository,
+      lookupDeveloperKey: (keyId) => database.repository.findById(keyId),
+      managementRepository: database.repository,
 
-        readers: {
-          getTreasuryData,
-          getAgentsData,
-          getWorkflowIds,
-          getWorkflowData,
-          getActivityData,
-        },
+      readers: {
+        getTreasuryData,
+        getAgentsData,
+        getWorkflowIds,
+        getWorkflowData,
+        getActivityData,
+      },
 
-        cachedRead,
-      });
+      cachedRead,
+    });
     const legacyDashboardHandler = createOwnerDashboardSessionHandler({
       apiHandler,
       ownerPublicKey: state.owner,
@@ -459,7 +461,7 @@ async function main(): Promise<void> {
       frontendOrigin: "http://127.0.0.1:5173",
       upstreamOrigin: `http://${HOST}:${PORT}`,
     });
-    const server = createServer(createSelectedVaultSessionHandler({
+    const selectedDashboardHandler = createSelectedVaultSessionHandler({
       fallbackHandler: legacyDashboardHandler,
       rpc: connection,
       network: NETWORK,
@@ -478,7 +480,31 @@ async function main(): Promise<void> {
           taskAccounts,
         });
       },
-    }));
+    });
+    const server = createServer(
+      createModelAPaymentHttpHandler({
+        fallbackHandler: selectedDashboardHandler,
+        lookupDeveloperKey: (keyId) => database.repository.findById(keyId),
+        network: NETWORK,
+        runtimeDir: RUNTIME_DIR,
+        expectedGenesisHash: state.genesisHash,
+        getGenesisHash: () => connection.getGenesisHash(),
+        checkPolicy: async ({ trustedScope, input }) => {
+          await verifyModelAPaymentIntentPolicy({
+            rpc: connection,
+            accounts: {
+              fetchAgent: (address) =>
+                program.account.agent.fetch(address, "confirmed"),
+              fetchTask: (address) =>
+                program.account.task.fetch(address, "confirmed"),
+            },
+            expectedDevnetGenesisHash: state.genesisHash,
+            trustedScope,
+            input,
+          });
+        },
+      })
+    );
     configureApiHttpServer(server);
 
     let shuttingDown = false;

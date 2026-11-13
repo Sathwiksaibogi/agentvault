@@ -1,4 +1,3 @@
-
 import {
   extractDeveloperApiKeyId,
   verifyDeveloperApiKey,
@@ -38,13 +37,12 @@ export async function resolveDeveloperApiKey(
   // permissions outside the current developer contract.
   const allowedScopes: readonly ApiScope[] = [
     "activity:read",
+    "payments:request",
   ];
 
   if (
-    record.scopes.length === 0 ||
-    record.scopes.some(
-      (scope) => !allowedScopes.includes(scope)
-    )
+    record.scopes.length !== 1 ||
+    record.scopes.some((scope) => !allowedScopes.includes(scope))
   ) {
     return null;
   }
@@ -52,9 +50,7 @@ export async function resolveDeveloperApiKey(
   if (
     !record.principalId ||
     record.vaults.length === 0 ||
-    record.vaults.some(
-  (vault) => !isCanonicalVaultAddress(vault)
-)
+    record.vaults.some((vault) => !isCanonicalVaultAddress(vault))
   ) {
     return null;
   }
@@ -66,7 +62,6 @@ export async function resolveDeveloperApiKey(
     scopes: [...record.scopes],
   };
 }
-
 
 function isCanonicalVaultAddress(value: string): boolean {
   try {

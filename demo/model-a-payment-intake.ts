@@ -283,3 +283,43 @@ export function receiveModelAPaymentIntent(args: {
   }
   return { record, duplicate: false };
 }
+
+/** Read an already-received intent for the SAME authenticated principal and vault. */
+export function readModelAPaymentIntent(args: {
+  runtimeDir: string;
+  trustedScope: TrustedPaymentIntakeScope;
+  requestId: string;
+}): StoredModelAPaymentIntent | null {
+  const { runtimeDir, trustedScope, requestId } = args;
+  validateTrustedScope(trustedScope);
+  if (!REQUEST_ID_RE.test(requestId)) throw new Error("Invalid request ID");
+  const { path } = journalPath(runtimeDir, trustedScope, requestId);
+  let record: StoredModelAPaymentIntent;
+  try {
+    record = JSON.parse(
+      readFileSync(path, "utf8")
+    ) as StoredModelAPaymentIntent;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error(
+      "Stored request unreadable; manual reconciliation required"
+    );
+  }
+  try {
+    const canonicalRequest = validateModelAPaymentIntent(
+      record.request,
+      record.createdAtUnix
+    );
+    if (record.principalId !== trustedScope.principalId) return null;
+    if (
+      canonicalRequest.requestId !== requestId ||
+      JSON.stringify(canonicalRequest) !== JSON.stringify(record.request) ||
+      !matchesExisting(record, trustedScope, canonicalRequest)
+    ) {
+      throw new Error("Invalid stored intent");
+    }
+  } catch {
+    throw new Error("Stored request invalid; manual reconciliation required");
+  }
+  return record;
+}

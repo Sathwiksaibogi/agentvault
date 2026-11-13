@@ -4,7 +4,8 @@ export type ApiScope =
   | "treasury:read"
   | "agents:read"
   | "workflows:read"
-  | "activity:read";
+  | "activity:read"
+  | "payments:request";
 
 export type ApiPrincipal = {
   principalId: string;
@@ -40,10 +41,7 @@ export function createLegacyPrincipal(
   };
 }
 
-export function hasApiScope(
-  principal: ApiPrincipal,
-  scope: ApiScope
-): boolean {
+export function hasApiScope(principal: ApiPrincipal, scope: ApiScope): boolean {
   return principal.scopes.includes(scope);
 }
 
@@ -65,12 +63,9 @@ export function isPrincipalRouteAllowed(
     "/api/activity": "activity:read",
   };
 
-  if (
-    /^\/api\/workflows\/[a-zA-Z0-9_-]{8,64}$/.test(pathname)
-  ) {
+  if (/^\/api\/workflows\/[a-zA-Z0-9_-]{8,64}$/.test(pathname)) {
     return (
-      principal.role === "owner" &&
-      hasApiScope(principal, "workflows:read")
+      principal.role === "owner" && hasApiScope(principal, "workflows:read")
     );
   }
 
@@ -81,10 +76,7 @@ export function isPrincipalRouteAllowed(
   }
 
   // Preserve the existing developer API contract.
-  if (
-    principal.role === "developer" &&
-    pathname !== "/api/activity"
-  ) {
+  if (principal.role === "developer" && pathname !== "/api/activity") {
     return false;
   }
 

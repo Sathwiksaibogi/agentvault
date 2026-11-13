@@ -33,7 +33,7 @@ function parseTimestamp(value: string | null): number | null {
 }
 
 function isDeveloperScope(scope: string): scope is ApiScope {
-  return scope === "activity:read";
+  return scope === "activity:read" || scope === "payments:request";
 }
 
 function parseScopes(scopes: string[]): ApiScope[] {

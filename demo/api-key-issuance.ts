@@ -61,7 +61,7 @@ export async function issueDeveloperApiKey(
   if (
     !Array.isArray(scopes) ||
     scopes.length !== 1 ||
-    scopes[0] !== "activity:read"
+    (scopes[0] !== "activity:read" && scopes[0] !== "payments:request")
   ) {
     throw new Error("Invalid developer API-key scopes");
   }
@@ -79,6 +79,19 @@ export async function issueDeveloperApiKey(
     throw new Error("Invalid expiration timestamp");
   }
 
+  // Elevated payment-request credentials must be short-lived. These keys
+  // authorize request intake only; they never authorize payment execution.
+  if (
+    scopes[0] === "payments:request" &&
+    (expiresAt === null ||
+      expiresAt > now + 24 * 60 * 60 * 1000 ||
+      !/^[A-Za-z0-9._:@-]{1,128}$/.test(principalId))
+  ) {
+    throw new Error(
+      "Payment-request API key requires a canonical principal and expiry within 24 hours"
+    );
+  }
+
   const token = generateDeveloperApiKey();
   const keyId = extractDeveloperApiKeyId(token);
 
@@ -92,7 +105,7 @@ export async function issueDeveloperApiKey(
     principalId,
     tokenHash: hashDeveloperApiKey(token),
     vaults: [vault],
-    scopes: ["activity:read"],
+    scopes: [scopes[0]],
     createdAt: now,
     expiresAt,
     revokedAt: null,

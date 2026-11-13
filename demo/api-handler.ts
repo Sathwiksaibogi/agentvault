@@ -281,9 +281,10 @@ export function createApiHandler(config: ApiHandlerConfig): RequestListener {
         // Never accept vault, scopes, issuer, or other authority
         // information from the HTTP request.
         if (
-          fields.length !== 2 ||
+          (fields.length !== 2 && fields.length !== 3) ||
           !fields.includes("principalId") ||
-          !fields.includes("expiresAt")
+          !fields.includes("expiresAt") ||
+          (fields.length === 3 && !fields.includes("scope"))
         ) {
           sendJson(response, 400, {
             error: "Invalid issuance parameters",
@@ -293,9 +294,15 @@ export function createApiHandler(config: ApiHandlerConfig): RequestListener {
 
         const principalId = input.principalId;
         const expiresAt = input.expiresAt;
+        // Default is the original activity-only credential. Payment-intent
+        // capability is an explicit owner-selected, short-lived scope.
+        const selectedScope =
+          input.scope === undefined ? "activity:read" : input.scope;
         const issuedAt = now?.() ?? Date.now();
 
         if (
+          (selectedScope !== "activity:read" &&
+            selectedScope !== "payments:request") ||
           typeof principalId !== "string" ||
           principalId.length === 0 ||
           principalId.length > 128 ||
@@ -317,7 +324,7 @@ export function createApiHandler(config: ApiHandlerConfig): RequestListener {
             issuer,
             principalId,
             vault: runtimeVault,
-            scopes: ["activity:read"],
+            scopes: [selectedScope],
             expiresAt,
             now: issuedAt,
             repository: managementRepository,
