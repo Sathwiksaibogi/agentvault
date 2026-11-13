@@ -4,6 +4,7 @@ import { strict as assert } from "node:assert";
 import { createServer } from "node:http";
 import { createApiHandler } from "./api-handler";
 import { createModelAPaymentHttpHandler } from "./model-a-payment-http";
+import { createModelAAgentInboxHttpHandler } from "./model-a-agent-inbox";
 import { verifyModelAPaymentIntentPolicy } from "./model-a-payment-policy";
 import { createOwnerDashboardSessionHandler } from "./owner-dashboard-session";
 import { createSelectedVaultSessionHandler } from "./selected-vault-dashboard-session";
@@ -483,26 +484,65 @@ async function main(): Promise<void> {
       },
     });
     const server = createServer(
-      createModelAPaymentHttpHandler({
-        fallbackHandler: selectedDashboardHandler,
-        lookupDeveloperKey: (keyId) => database.repository.findById(keyId),
+      createModelAAgentInboxHttpHandler({
+        fallbackHandler: createModelAPaymentHttpHandler({
+          fallbackHandler: selectedDashboardHandler,
+          lookupDeveloperKey: (keyId) => database.repository.findById(keyId),
+          network: NETWORK,
+          runtimeDir: RUNTIME_DIR,
+          expectedGenesisHash: state.genesisHash,
+          getGenesisHash: () => connection.getGenesisHash(),
+          checkPolicy: async ({ trustedScope, input }) => {
+            await verifyModelAPaymentIntentPolicy({
+              rpc: connection,
+              accounts: {
+                fetchAgent: (address) =>
+                  program.account.agent.fetch(address, "confirmed"),
+                fetchTask: (address) =>
+                  program.account.task.fetch(address, "confirmed"),
+              },
+              expectedDevnetGenesisHash: state.genesisHash,
+              trustedScope,
+              input,
+            });
+          },
+        }),
         network: NETWORK,
         runtimeDir: RUNTIME_DIR,
         expectedGenesisHash: state.genesisHash,
         getGenesisHash: () => connection.getGenesisHash(),
-        checkPolicy: async ({ trustedScope, input }) => {
-          await verifyModelAPaymentIntentPolicy({
-            rpc: connection,
-            accounts: {
-              fetchAgent: (address) =>
-                program.account.agent.fetch(address, "confirmed"),
-              fetchTask: (address) =>
-                program.account.task.fetch(address, "confirmed"),
-            },
-            expectedDevnetGenesisHash: state.genesisHash,
-            trustedScope,
-            input,
-          });
+        verifyAgent: async ({ vault, agentAuthority }) => {
+          const vaultKey = new PublicKey(vault);
+          const authorityKey = new PublicKey(agentAuthority);
+          const [agentPda] = PublicKey.findProgramAddressSync(
+            [
+              Buffer.from("agent"),
+              vaultKey.toBuffer(),
+              authorityKey.toBuffer(),
+            ],
+            new PublicKey(state.programId)
+          );
+          const vaultInfo = await connection.getAccountInfo(
+            vaultKey,
+            "confirmed"
+          );
+          if (
+            !vaultInfo ||
+            !vaultInfo.owner.equals(new PublicKey(state.programId)) ||
+            vaultInfo.data.length !== 90 ||
+            vaultInfo.data[88] !== 0
+          )
+            throw new Error("Vault unavailable or paused");
+          const agent = await program.account.agent.fetch(
+            agentPda,
+            "confirmed"
+          );
+          if (
+            !agent.active ||
+            !agent.vault.equals(vaultKey) ||
+            !agent.authority.equals(authorityKey)
+          )
+            throw new Error("Agent not active in selected vault");
         },
       })
     );
