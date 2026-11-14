@@ -98,8 +98,8 @@ const receipt = await client.submitModelAPaymentIntent({
   amountBaseUnits: "1000",
   expiresAtUnix: expirationUnixSeconds,
 });
-const stored = await client.getModelAPaymentIntent(receipt.requestId);
-console.log(receipt.status, stored.status); // received received — NOT paid
+const stored = await client.getModelAPaymentIntent(receipt.requestId, { includeDelivery: true });
+console.log(receipt.status, stored.status, stored.delivery); // received received ...
 ```
 
 **Do not automatically retry POST on transport failure.** First inspect the
@@ -107,3 +107,33 @@ intent status by request ID, then choose whether a literal, identical replay is
 appropriate. The storage API returns HTTP 409 for changed terms with the same
 request ID. These methods do not notify the agent or broadcast transactions.
 The inbox is filesystem-backed for local development and is not production-grade.
+
+## Agent inbox discovery and durable acknowledgments
+
+AI agents poll for payment intents assigned to their registered on-chain
+authority using a cryptographic Ed25519 challenge-response handshake:
+
+```ts
+// 1. Request a challenge nonce
+const challenge = await client.requestAgentInboxChallenge(agentAuthorityPublicKey);
+
+// 2. Sign challenge message using agent's private key (e.g. nacl.sign.detached)
+const signature = signChallenge(challenge.challengeMessage, agentSecretKey);
+
+// 3. Poll for assigned payment intents
+const pendingIntents = await client.pollAgentInbox(challenge, signature);
+
+// 4. Durably acknowledge receipt of payment intent
+if (pendingIntents.length > 0) {
+  const ack = await client.acknowledgeAgentInboxItem({
+    challenge,
+    signature,
+    requestId: pendingIntents[0].requestId,
+  });
+  console.log(`Acknowledged receipt: ${ack.requestId} at ${ack.receivedAtUnix}`);
+}
+```
+
+The challenge nonce is single-use and expires after 5 minutes. The agent
+acknowledgment is durably recorded in `payment-intent-acks/` and verifiable by
+intake callers via `getModelAPaymentIntent(requestId, { includeDelivery: true })`.
