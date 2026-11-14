@@ -28,6 +28,7 @@ import type {
   ServerResponse,
 } from "node:http";
 import { PublicKey, type AccountInfo } from "@solana/web3.js";
+import { BorshAccountsCoder } from "@anchor-lang/core";
 import BN from "bn.js";
 import nacl from "tweetnacl";
 import { createSelectedVaultDeveloperKeyHandler } from "./owner-vault-developer-keys";
@@ -43,6 +44,14 @@ import {
   verifyPaymentApprovalV2,
   type PaymentApprovalV2,
 } from "./payment-approval-v2";
+import {
+  verifyWorkflowApprovalV2,
+  type WorkflowApprovalV2,
+} from "./signed-workflow-v2";
+
+const idlPath = join(process.cwd(), "target/idl/agentvault.json");
+const agentVaultIdl = JSON.parse(readFileSync(idlPath, "utf8"));
+const accountsCoder = new BorshAccountsCoder(agentVaultIdl);
 
 const COOKIE_NAME = "av_selected_vault_session";
 const MAX_CHALLENGES = 128;
@@ -241,6 +250,60 @@ async function getVerifiedTaskOnChain(args: {
   expiresAtUnix: bigint;
   active: boolean;
 }> {
+  const info = await args.rpc.getAccountInfo(args.taskPda, "confirmed");
+  if (info && info.data) {
+    // 1. Verify account owner is the AgentVault program
+    const programKey = new PublicKey(AGENTVAULT_PROGRAM);
+    if (info.owner && !info.owner.equals(programKey)) {
+      throw new Error("Task account is not owned by the AgentVault program");
+    }
+
+    // 2. Determine and verify discriminator via Anchor IDL
+    const approvedTaskDisc = accountsCoder.accountDiscriminator("ApprovedTask");
+    const legacyTaskDisc = accountsCoder.accountDiscriminator("Task");
+
+    let accountType: "ApprovedTask" | "Task";
+    const disc = info.data.subarray(0, 8);
+    if (disc.equals(approvedTaskDisc)) {
+      accountType = "ApprovedTask";
+    } else if (disc.equals(legacyTaskDisc)) {
+      accountType = "Task";
+    } else {
+      throw new Error("Invalid or unrecognized task account discriminator");
+    }
+
+    // 3. Decode account data using Anchor BorshAccountsCoder
+    let decoded: any;
+    try {
+      decoded = accountsCoder.decode(accountType, info.data);
+    } catch (err) {
+      throw new Error(
+        `Failed to decode ${accountType} account data: ${(err as Error).message}`
+      );
+    }
+
+    // 4. Verify decoded fields: vault, agent, active status
+    if (!decoded.vault.equals(args.vaultKey)) {
+      throw new Error("Task account vault mismatch on-chain");
+    }
+    if (!decoded.agent.equals(args.agentPda)) {
+      throw new Error("Task account agent mismatch on-chain");
+    }
+    if (!decoded.active) {
+      throw new Error("Task account is inactive or revoked on-chain");
+    }
+
+    return {
+      recipient: decoded.recipient,
+      budget: BigInt(decoded.budget.toString()),
+      spent: BigInt(decoded.spent.toString()),
+      nextNonce: BigInt(decoded.next_nonce.toString()),
+      expiresAtUnix: BigInt(decoded.expires_at.toString()),
+      active: decoded.active,
+    };
+  }
+
+  // Fallback to scoped agent inventory if RPC account not found
   if (args.readScopedAgents) {
     const inv = await args.readScopedAgents(args.verified);
     for (const agent of inv.agents) {
@@ -259,33 +322,7 @@ async function getVerifiedTaskOnChain(args: {
     }
   }
 
-  const info = await args.rpc.getAccountInfo(args.taskPda, "confirmed");
-  if (!info || info.data.length < 146) {
-    throw new Error("Task account not found or invalid on-chain");
-  }
-  const taskVault = new PublicKey(info.data.subarray(8, 40));
-  const taskAgent = new PublicKey(info.data.subarray(40, 72));
-  if (!taskVault.equals(args.vaultKey) || !taskAgent.equals(args.agentPda)) {
-    throw new Error(
-      "Task account vault/agent relationship mismatch on-chain"
-    );
-  }
-  const recipient = new PublicKey(info.data.subarray(80, 112));
-  const budget = info.data.readBigUInt64LE(112);
-  const spent = info.data.readBigUInt64LE(120);
-  const expiresAtUnix = info.data.readBigInt64LE(128);
-  const nextNonce = info.data.readBigUInt64LE(136);
-  const active =
-    info.data.length >= 178 ? info.data[176] === 1 : info.data[144] === 1;
-
-  return {
-    recipient,
-    budget,
-    spent,
-    nextNonce,
-    expiresAtUnix,
-    active,
-  };
+  throw new Error("Task account not found or invalid on-chain");
 }
 
 function sendJson(
@@ -654,19 +691,149 @@ export function createSelectedVaultSessionHandler(
           if (!/^[a-zA-Z0-9_-]{8,64}$/.test(requestId)) {
             return void sendJson(res, 400, { error: "Invalid request ID" });
           }
+
+          const taskId = body.taskId ? String(body.taskId) : "";
+          if (!taskId || !/^(0|[1-9][0-9]*)$/.test(taskId)) {
+            return void sendJson(res, 400, {
+              error:
+                "Missing or invalid taskId; default task IDs are strictly prohibited",
+            });
+          }
+
+          // Ensure pending requests originate from an authenticated, trusted workflow
+          let verifiedWorkflow: WorkflowApprovalV2 | null = null;
+          if (body.signedWorkflow) {
+            try {
+              verifiedWorkflow = verifyWorkflowApprovalV2(
+                body.signedWorkflow,
+                {
+                  network: "devnet",
+                  genesisHash: expectedGenesisHash,
+                  programId: AGENTVAULT_PROGRAM,
+                  vault: verified.vault,
+                  owner: verified.owner,
+                  mint: verified.mint,
+                },
+                Math.floor(now() / 1000)
+              );
+            } catch (wfErr) {
+              return void sendJson(res, 400, {
+                error: `Workflow verification failed: ${(wfErr as Error).message}`,
+              });
+            }
+            if (verifiedWorkflow.requestId !== requestId) {
+              return void sendJson(res, 400, {
+                error: "Workflow request ID mismatch",
+              });
+            }
+            if (String(verifiedWorkflow.taskId) !== taskId) {
+              return void sendJson(res, 400, {
+                error: "Workflow task ID mismatch",
+              });
+            }
+          } else if (runtimeDir) {
+            const diskWfPath = join(runtimeDir, "approvals", `${requestId}.json`);
+            if (existsSync(diskWfPath)) {
+              try {
+                const rawWf = JSON.parse(readFileSync(diskWfPath, "utf8"));
+                verifiedWorkflow = verifyWorkflowApprovalV2(
+                  rawWf,
+                  {
+                    network: "devnet",
+                    genesisHash: expectedGenesisHash,
+                    programId: AGENTVAULT_PROGRAM,
+                    vault: verified.vault,
+                    owner: verified.owner,
+                    mint: verified.mint,
+                  },
+                  Math.floor(now() / 1000)
+                );
+              } catch (wfErr) {
+                return void sendJson(res, 400, {
+                  error: `Stored workflow verification failed: ${(wfErr as Error).message}`,
+                });
+              }
+            }
+          }
+
+          if (!verifiedWorkflow && !saveScopedPendingApproval) {
+            return void sendJson(res, 400, {
+              error:
+                "Pending request must originate from an authenticated, trusted workflow",
+            });
+          }
+
+          const recipient = verifiedWorkflow
+            ? verifiedWorkflow.recipient
+            : String(body.recipient ?? "");
+          const amountBaseUnits = verifiedWorkflow
+            ? String(verifiedWorkflow.amountBaseUnits)
+            : String(body.amountBaseUnits ?? "");
+          const expiresAtUnix = verifiedWorkflow
+            ? String(verifiedWorkflow.expiresAtUnix)
+            : String(body.expiresAtUnix ?? "");
+          const agentAuthority = verifiedWorkflow
+            ? verifiedWorkflow.agentAuthority
+            : String(body.agentAuthority ?? "");
+
+          if (
+            !recipient ||
+            !amountBaseUnits ||
+            !expiresAtUnix ||
+            !agentAuthority
+          ) {
+            return void sendJson(res, 400, {
+              error: "Missing required payment parameters",
+            });
+          }
+
           const pendingRequest: ModelBPendingRequest = {
             requestId,
             vault: verified.vault,
-            agentAuthority: String(body.agentAuthority ?? ""),
-            taskId: String(body.taskId ?? "0"),
-            recipient: String(body.recipient ?? ""),
-            amountBaseUnits: String(body.amountBaseUnits ?? ""),
-            expiresAtUnix: String(body.expiresAtUnix ?? ""),
+            agentAuthority,
+            taskId,
+            recipient,
+            amountBaseUnits,
+            expiresAtUnix,
             nonce: body.nonce ? String(body.nonce) : undefined,
             status: "pending_owner_approval",
-            description: body.description ? String(body.description) : undefined,
+            description:
+              verifiedWorkflow?.description ??
+              (body.description ? String(body.description) : undefined),
             createdAtUnix: Math.floor(now() / 1000),
           };
+
+          // Immutability and idempotency check
+          const existing = await findPendingModelBRequest({
+            verified,
+            requestId,
+            runtimeDir,
+            readScopedPendingApprovals,
+            readScopedApprovals,
+          });
+          if (existing) {
+            const isIdentical =
+              existing.vault === pendingRequest.vault &&
+              existing.agentAuthority === pendingRequest.agentAuthority &&
+              existing.taskId === pendingRequest.taskId &&
+              existing.recipient === pendingRequest.recipient &&
+              existing.amountBaseUnits === pendingRequest.amountBaseUnits &&
+              existing.expiresAtUnix === pendingRequest.expiresAtUnix &&
+              (existing.nonce ?? "") === (pendingRequest.nonce ?? "");
+            if (isIdentical) {
+              return void sendJson(res, 200, {
+                ok: true,
+                requestId,
+                status: "pending_owner_approval",
+                idempotent: true,
+              });
+            } else {
+              return void sendJson(res, 409, {
+                error: `Pending request ${requestId} already exists with different immutable terms`,
+              });
+            }
+          }
+
           if (saveScopedPendingApproval) {
             await saveScopedPendingApproval(verified, pendingRequest);
           } else if (runtimeDir) {
@@ -779,6 +946,31 @@ export function createSelectedVaultSessionHandler(
             });
           }
 
+          if (!pending.taskId || !/^(0|[1-9][0-9]*)$/.test(pending.taskId)) {
+            return void sendJson(res, 400, {
+              error:
+                "Pending Model B request has missing or invalid task ID; default task IDs are strictly prohibited",
+            });
+          }
+
+          if (
+            pending.nonce !== undefined &&
+            paymentApproval.nonce !== pending.nonce
+          ) {
+            return void sendJson(res, 400, {
+              error: `Nonce mismatch: approval specified ${paymentApproval.nonce}, but pending request specified ${pending.nonce}`,
+            });
+          }
+
+          if (
+            BigInt(paymentApproval.expiresAtUnix) >
+            BigInt(pending.expiresAtUnix)
+          ) {
+            return void sendJson(res, 400, {
+              error: "Approval expiry exceeds pending request expiry",
+            });
+          }
+
           // 3. Derive and verify expected Agent PDA
           const authorityKey = new PublicKey(paymentApproval.agentAuthority);
           const vaultKey = new PublicKey(verified.vault);
@@ -798,7 +990,7 @@ export function createSelectedVaultSessionHandler(
           }
 
           // 4. Derive expected Task PDA and verify live on-chain task state
-          const taskIdNumber = BigInt(pending.taskId ?? "0");
+          const taskIdNumber = BigInt(pending.taskId);
           const taskIdBytes = Buffer.alloc(8);
           taskIdBytes.writeBigUInt64LE(taskIdNumber);
           const [expectedApprovedTaskPda] = PublicKey.findProgramAddressSync(

@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { once } from "node:events";
+import { join } from "node:path";
 import { test } from "node:test";
 import { Keypair, PublicKey, type AccountInfo } from "@solana/web3.js";
+import { BorshAccountsCoder } from "@anchor-lang/core";
+import BN from "bn.js";
 import nacl from "tweetnacl";
 import {
   createSelectedVaultSessionHandler,
@@ -13,6 +17,15 @@ import {
   encodePaymentApprovalV2,
   type PaymentApprovalV2,
 } from "./payment-approval-v2";
+import {
+  encodeWorkflowV2,
+  type WorkflowApprovalV2,
+} from "./signed-workflow-v2";
+
+const testIdl = JSON.parse(
+  readFileSync(join(process.cwd(), "target/idl/agentvault.json"), "utf8")
+);
+const testAccountsCoder = new BorshAccountsCoder(testIdl);
 
 const FRONTEND = "http://127.0.0.1:5173";
 const GENESIS = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
@@ -96,6 +109,7 @@ type Context = {
   taskA: any;
   approvalsStore: any[];
   setAgentsForVault: (vault: string, agents: any[]) => void;
+  setAccount: (address: string, info: AccountInfo<Buffer> | null) => void;
   setNow: (time: number) => void;
   setGenesis: (hash: string) => void;
   fallbackCalls: () => number;
@@ -178,6 +192,29 @@ async function withServer(
       vault: verified.vault,
       approvals: approvalsStore.filter((a) => a.vault === verified.vault),
     }),
+    readScopedPendingApprovals: async (verified) => {
+      return approvalsStore
+        .filter(
+          (a) =>
+            a.vault === verified.vault && a.status === "pending_owner_approval"
+        )
+        .map((a) => ({
+          requestId: a.requestId,
+          vault: a.vault,
+          agentAuthority: a.agentAuthority,
+          taskId: a.taskId,
+          recipient: a.recipient,
+          amountBaseUnits: a.amountBaseUnits,
+          expiresAtUnix: a.expiresAtUnix,
+          nonce: a.nonce,
+          status: "pending_owner_approval",
+          description: a.description,
+          createdAtUnix: a.createdAtUnix ?? Math.floor(timestamp / 1000),
+        }));
+    },
+    saveScopedPendingApproval: async (verified, pendingRequest) => {
+      approvalsStore.push(pendingRequest);
+    },
     saveScopedApproval: async (verified, approvalData) => {
       // Remove pending if exists
       const existingIdx = approvalsStore.findIndex(
@@ -225,6 +262,10 @@ async function withServer(
       approvalsStore,
       setAgentsForVault: (vault: string, agents: any[]) => {
         customAgentsMap.set(vault, agents);
+      },
+      setAccount: (address: string, info: AccountInfo<Buffer> | null) => {
+        if (info === null) lookup.delete(address);
+        else lookup.set(address, info);
       },
       setNow: (time: number) => {
         timestamp = time;
@@ -790,5 +831,330 @@ test("submitting PaymentApprovalV2 with mismatched owner or forged signature is 
       }),
     });
     assert.equal(wrongVaultRes.status, 403);
+  });
+});
+
+test("Model B pending requests: must originate from authenticated workflow, reject default task ID, and enforce immutability", async () => {
+  await withServer(async (ctx) => {
+    const cookie = await loginOwner(ctx, ctx.a);
+
+    // 1. Missing or invalid taskId fails closed (default task IDs prohibited)
+    const noTaskIdRes = await fetch(
+      `${ctx.base}/owner-vault/api/pending-requests`,
+      {
+        method: "POST",
+        headers: {
+          Origin: FRONTEND,
+          Cookie: cookie,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          requestId: "model_b_req_no_task_01",
+          recipient: ctx.a.owner,
+          amountBaseUnits: "1000",
+          expiresAtUnix: "1850000000",
+          agentAuthority: ctx.a.owner,
+        }),
+      }
+    );
+    assert.equal(noTaskIdRes.status, 400);
+    const noTaskJson = (await noTaskIdRes.json()) as { error: string };
+    assert.ok(
+      noTaskJson.error.includes("default task IDs are strictly prohibited")
+    );
+
+    // 2. Submit with valid signed workflow
+    const workflow: WorkflowApprovalV2 = {
+      version: 2,
+      authorizationModel: "model-b",
+      network: "devnet",
+      requestId: "model_b_req_valid_wf_01",
+      genesisHash: GENESIS,
+      programId: PROGRAM.toBase58(),
+      vault: ctx.a.vault,
+      owner: ctx.a.owner,
+      mint: ctx.a.mint,
+      assignedAgent: "agent-a",
+      agentAuthority: ctx.a.owner,
+      kind: "procurement",
+      taskId: 1,
+      recipient: ctx.a.owner,
+      amountBaseUnits: 5000,
+      expiresAtUnix: 1850000000,
+      description: "Authenticated procurement workflow",
+    };
+    const wfEncoded = encodeWorkflowV2(workflow);
+    const wfSig = Buffer.from(
+      nacl.sign.detached(wfEncoded, ctx.a.signer.secretKey)
+    ).toString("base64");
+
+    const validPendingRes = await fetch(
+      `${ctx.base}/owner-vault/api/pending-requests`,
+      {
+        method: "POST",
+        headers: {
+          Origin: FRONTEND,
+          Cookie: cookie,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          requestId: "model_b_req_valid_wf_01",
+          taskId: "1",
+          nonce: "3",
+          signedWorkflow: {
+            workflow,
+            signature: wfSig,
+          },
+        }),
+      }
+    );
+    assert.equal(validPendingRes.status, 201);
+    const validPendingJson = (await validPendingRes.json()) as {
+      ok: boolean;
+      requestId: string;
+      status: string;
+    };
+    assert.equal(validPendingJson.ok, true);
+    assert.equal(validPendingJson.status, "pending_owner_approval");
+
+    // 3. Idempotent submission: submitting exact same request returns 200 with idempotent: true
+    const dupRes = await fetch(`${ctx.base}/owner-vault/api/pending-requests`, {
+      method: "POST",
+      headers: {
+        Origin: FRONTEND,
+        Cookie: cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        requestId: "model_b_req_valid_wf_01",
+        taskId: "1",
+        nonce: "3",
+        signedWorkflow: {
+          workflow,
+          signature: wfSig,
+        },
+      }),
+    });
+    assert.equal(dupRes.status, 200);
+    const dupJson = (await dupRes.json()) as {
+      ok: boolean;
+      idempotent: boolean;
+    };
+    assert.equal(dupJson.ok, true);
+    assert.equal(dupJson.idempotent, true);
+
+    // 4. Immutability: submitting different terms for same requestId fails with 409 Conflict
+    const conflictWf: WorkflowApprovalV2 = {
+      ...workflow,
+      amountBaseUnits: 9999, // Mismatched amount
+    };
+    const conflictSig = Buffer.from(
+      nacl.sign.detached(encodeWorkflowV2(conflictWf), ctx.a.signer.secretKey)
+    ).toString("base64");
+
+    const conflictRes = await fetch(
+      `${ctx.base}/owner-vault/api/pending-requests`,
+      {
+        method: "POST",
+        headers: {
+          Origin: FRONTEND,
+          Cookie: cookie,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          requestId: "model_b_req_valid_wf_01",
+          taskId: "1",
+          nonce: "3",
+          signedWorkflow: {
+            workflow: conflictWf,
+            signature: conflictSig,
+          },
+        }),
+      }
+    );
+    assert.equal(conflictRes.status, 409);
+    const conflictJson = (await conflictRes.json()) as { error: string };
+    assert.ok(conflictJson.error.includes("already exists with different immutable terms"));
+  });
+});
+
+test("Model B account verification: Anchor IDL decoding and account validation on-chain", async () => {
+  await withServer(async (ctx) => {
+    const cookie = await loginOwner(ctx, ctx.a);
+
+    // Encode a realistic ApprovedTask account using BorshAccountsCoder
+    const approvedTaskData = await testAccountsCoder.encode("ApprovedTask", {
+      vault: new PublicKey(ctx.a.vault),
+      agent: new PublicKey(ctx.agentPdaA),
+      task_id: new BN(1),
+      recipient: new PublicKey(ctx.a.owner),
+      budget: new BN(100000),
+      spent: new BN(0),
+      expires_at: new BN(1900000000),
+      next_nonce: new BN(3),
+      genesis_hash: new PublicKey(GENESIS),
+      active: true,
+      bump: 254,
+    });
+
+    // Populate RPC lookup with real on-chain ApprovedTask account data owned by PROGRAM
+    ctx.setAccount(ctx.taskPdaA, {
+      owner: PROGRAM,
+      data: approvedTaskData,
+      lamports: 1_000_000,
+      executable: false,
+      rentEpoch: 0,
+    });
+
+    ctx.approvalsStore.push({
+      vault: ctx.a.vault,
+      requestId: "model_b_idl_task_01",
+      taskId: "1",
+      authorizationModel: "model-b",
+      status: "pending_owner_approval",
+      agentAuthority: ctx.a.owner,
+      recipient: ctx.a.owner,
+      amountBaseUnits: "5000",
+      nonce: "3",
+      expiresAtUnix: "1850000000",
+    });
+
+    const approval: PaymentApprovalV2 = {
+      version: 2,
+      genesisHash: GENESIS,
+      programId: PROGRAM.toBase58(),
+      vault: ctx.a.vault,
+      owner: ctx.a.owner,
+      mint: ctx.a.mint,
+      agent: ctx.agentPdaA,
+      agentAuthority: ctx.a.owner,
+      task: ctx.taskPdaA,
+      recipient: ctx.a.owner,
+      amountBaseUnits: "5000",
+      nonce: "3",
+      expiresAtUnix: "1850000000",
+      requestId: "model_b_idl_task_01",
+    };
+    const encoded = encodePaymentApprovalV2(approval);
+    const sig = Buffer.from(
+      nacl.sign.detached(encoded, ctx.a.signer.secretKey)
+    ).toString("base64");
+
+    // 1. Real Anchor IDL decoded ApprovedTask succeeds
+    const successRes = await fetch(`${ctx.base}/owner-vault/api/approvals`, {
+      method: "POST",
+      headers: {
+        Origin: FRONTEND,
+        Cookie: cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        paymentApproval: approval,
+        signatureBase64: sig,
+      }),
+    });
+    assert.equal(successRes.status, 200);
+
+    // 2. Negative test: task account owned by rogue program fails closed
+    ctx.approvalsStore.push({
+      vault: ctx.a.vault,
+      requestId: "model_b_idl_rogue_owner_01",
+      taskId: "1",
+      authorizationModel: "model-b",
+      status: "pending_owner_approval",
+      agentAuthority: ctx.a.owner,
+      recipient: ctx.a.owner,
+      amountBaseUnits: "5000",
+      nonce: "3",
+      expiresAtUnix: "1850000000",
+    });
+    const rogueOwnerApproval = {
+      ...approval,
+      requestId: "model_b_idl_rogue_owner_01",
+    };
+    const rogueEncoded = encodePaymentApprovalV2(rogueOwnerApproval);
+    const rogueSig = Buffer.from(
+      nacl.sign.detached(rogueEncoded, ctx.a.signer.secretKey)
+    ).toString("base64");
+
+    ctx.setAccount(ctx.taskPdaA, {
+      owner: Keypair.generate().publicKey, // Wrong program owner!
+      data: approvedTaskData,
+      lamports: 1_000_000,
+      executable: false,
+      rentEpoch: 0,
+    });
+    const rogueRes = await fetch(`${ctx.base}/owner-vault/api/approvals`, {
+      method: "POST",
+      headers: {
+        Origin: FRONTEND,
+        Cookie: cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        paymentApproval: rogueOwnerApproval,
+        signatureBase64: rogueSig,
+      }),
+    });
+    assert.equal(rogueRes.status, 400);
+
+    // 3. Negative test: task account with corrupt discriminator fails closed
+    const corruptData = Buffer.from(approvedTaskData);
+    corruptData[0] ^= 0xff; // Corrupt discriminator byte
+    ctx.setAccount(ctx.taskPdaA, {
+      owner: PROGRAM,
+      data: corruptData,
+      lamports: 1_000_000,
+      executable: false,
+      rentEpoch: 0,
+    });
+    const corruptRes = await fetch(`${ctx.base}/owner-vault/api/approvals`, {
+      method: "POST",
+      headers: {
+        Origin: FRONTEND,
+        Cookie: cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        paymentApproval: rogueOwnerApproval,
+        signatureBase64: rogueSig,
+      }),
+    });
+    assert.equal(corruptRes.status, 400);
+
+    // 4. Negative test: inactive task (active: false) fails closed
+    const inactiveTaskData = await testAccountsCoder.encode("ApprovedTask", {
+      vault: new PublicKey(ctx.a.vault),
+      agent: new PublicKey(ctx.agentPdaA),
+      task_id: new BN(1),
+      recipient: new PublicKey(ctx.a.owner),
+      budget: new BN(100000),
+      spent: new BN(0),
+      expires_at: new BN(1900000000),
+      next_nonce: new BN(3),
+      genesis_hash: new PublicKey(GENESIS),
+      active: false, // Inactive / revoked task
+      bump: 254,
+    });
+    ctx.setAccount(ctx.taskPdaA, {
+      owner: PROGRAM,
+      data: inactiveTaskData,
+      lamports: 1_000_000,
+      executable: false,
+      rentEpoch: 0,
+    });
+    const inactiveRes = await fetch(`${ctx.base}/owner-vault/api/approvals`, {
+      method: "POST",
+      headers: {
+        Origin: FRONTEND,
+        Cookie: cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        paymentApproval: rogueOwnerApproval,
+        signatureBase64: rogueSig,
+      }),
+    });
+    assert.equal(inactiveRes.status, 400);
   });
 });
