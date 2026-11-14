@@ -154,6 +154,7 @@ export function createModelAPaymentHttpHandler(
             runtimeDir,
             trustedScope: scope,
             requestId: match[1],
+            includeDelivery: true,
           });
           if (!record)
             return void respond(res, 404, { error: "Intent not found" });

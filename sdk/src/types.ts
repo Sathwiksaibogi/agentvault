@@ -102,7 +102,7 @@ export interface ModelAPaymentIntentAccepted {
   notice: "Request only; not approved, queued for execution, or paid";
 }
 
-/** GET /api/model-a/payment-intents/:requestId. No other status exists yet. */
+/** GET /api/model-a/payment-intents/:requestId. */
 export interface StoredModelAPaymentIntent {
   version: 1;
   kind: "model-a-payment-intent";
@@ -112,6 +112,34 @@ export interface StoredModelAPaymentIntent {
   principalId: string;
   createdAtUnix: number;
   request: ModelAPaymentIntentInput;
+  delivery?: {
+    acknowledged: boolean;
+    acknowledgedAtUnix?: number;
+  };
+}
+
+export interface AgentInboxChallenge {
+  nonce: string;
+  message: string;
+  expiresAtUnix: number;
+}
+
+export interface AgentInboxPollResult {
+  network: "devnet";
+  vault: string;
+  agentAuthority: string;
+  items: StoredModelAPaymentIntent[];
+  notice: string;
+}
+
+export interface AgentInboxAckResult {
+  network: "devnet";
+  vault: string;
+  agentAuthority: string;
+  requestId: string;
+  acknowledgedAtUnix: number;
+  duplicate: boolean;
+  notice: string;
 }
 
 export interface AgentVaultClientOptions {

@@ -16,6 +16,7 @@ import { PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 import nacl from "tweetnacl";
 import {
+  acknowledgeModelAPaymentIntent,
   validateModelAPaymentIntent,
   type StoredModelAPaymentIntent,
 } from "./model-a-payment-intake";
@@ -144,6 +145,12 @@ export type ModelAAgentInboxHttpOptions = {
   getGenesisHash: () => Promise<string>;
   /** Must re-read actual on-chain program-owned, active vault+agent accounts. */
   verifyAgent: (scope: Scope) => Promise<void>;
+  acknowledgeItem?: (args: {
+    vault: string;
+    agentAuthority: string;
+    requestId: string;
+    nowUnix: number;
+  }) => Promise<{ acknowledgedAtUnix: number; duplicate: boolean }>;
   now?: () => number;
 };
 
@@ -197,14 +204,20 @@ export function createModelAAgentInboxHttpHandler(
     expectedGenesisHash,
     getGenesisHash,
     verifyAgent,
+    acknowledgeItem,
     now = Date.now,
   } = options;
   const challenges = new Map<string, Challenge>();
   const challengePath = `${BASE}/challenge`;
   const pollPath = `${BASE}/poll`;
+  const ackPath = `${BASE}/ack`;
   return (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
-    if (url.pathname !== challengePath && url.pathname !== pollPath) {
+    if (
+      url.pathname !== challengePath &&
+      url.pathname !== pollPath &&
+      url.pathname !== ackPath
+    ) {
       if (url.pathname.startsWith(`${BASE}/`))
         return void respond(res, 404, { error: "Endpoint not found" });
       return void fallbackHandler(req, res);
@@ -264,21 +277,44 @@ export function createModelAAgentInboxHttpHandler(
           expiresAtUnix: Math.floor(expiresAt / 1000),
         });
       }
-      let nonce: string, signature: string;
+
+      const isAck = url.pathname === ackPath;
+      let nonce: string, signature: string, requestId: string | undefined;
       try {
-        const fields = objectWithKeys(body, ["nonce", "signature"]);
-        if (
-          typeof fields.nonce !== "string" ||
-          !NONCE_RE.test(fields.nonce) ||
-          typeof fields.signature !== "string"
-        ) {
-          throw new Error("Invalid challenge response");
+        if (isAck) {
+          const fields = objectWithKeys(body, [
+            "nonce",
+            "signature",
+            "requestId",
+          ]);
+          if (
+            typeof fields.nonce !== "string" ||
+            !NONCE_RE.test(fields.nonce) ||
+            typeof fields.signature !== "string" ||
+            typeof fields.requestId !== "string" ||
+            !/^[A-Za-z0-9_-]{8,64}$/.test(fields.requestId)
+          ) {
+            throw new Error("Invalid challenge response");
+          }
+          nonce = fields.nonce;
+          signature = fields.signature;
+          requestId = fields.requestId;
+        } else {
+          const fields = objectWithKeys(body, ["nonce", "signature"]);
+          if (
+            typeof fields.nonce !== "string" ||
+            !NONCE_RE.test(fields.nonce) ||
+            typeof fields.signature !== "string"
+          ) {
+            throw new Error("Invalid challenge response");
+          }
+          nonce = fields.nonce;
+          signature = fields.signature;
         }
-        nonce = fields.nonce;
-        signature = fields.signature;
       } catch {
         return void respond(res, 400, { error: "Invalid challenge response" });
       }
+
       // Consume before validating the signature; unsuccessful attempts are not retryable.
       const challenge = challenges.get(nonce);
       challenges.delete(nonce);
@@ -315,6 +351,53 @@ export function createModelAAgentInboxHttpHandler(
       } catch {
         return void respond(res, 403, { error: "Agent policy not satisfied" });
       }
+
+      if (isAck && requestId) {
+        try {
+          const serverNowUnix = Math.floor(now() / 1000);
+          const ackResult = acknowledgeItem
+            ? await acknowledgeItem({
+                vault: challenge.vault,
+                agentAuthority: challenge.agentAuthority,
+                requestId,
+                nowUnix: serverNowUnix,
+              })
+            : acknowledgeModelAPaymentIntent({
+                runtimeDir,
+                vault: challenge.vault,
+                agentAuthority: challenge.agentAuthority,
+                requestId,
+                nowUnix: serverNowUnix,
+              });
+          return void respond(res, 200, {
+            network: "devnet",
+            vault: challenge.vault,
+            agentAuthority: challenge.agentAuthority,
+            requestId,
+            acknowledgedAtUnix: ackResult.acknowledgedAtUnix,
+            duplicate: ackResult.duplicate,
+            notice:
+              "Durable delivery receipt only: not approved, authorized for execution or paid",
+          });
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : "";
+          if (
+            msg.includes("Payment intent not found") ||
+            msg.includes("does not match agent")
+          ) {
+            return void respond(res, 404, {
+              error: "Payment intent not found",
+            });
+          }
+          if (msg.includes("Payment intent expired")) {
+            return void respond(res, 410, { error: "Payment intent expired" });
+          }
+          return void respond(res, 503, {
+            error: "Acknowledgment unavailable",
+          });
+        }
+      }
+
       try {
         const items = discoverAgentInbox({
           runtimeDir,

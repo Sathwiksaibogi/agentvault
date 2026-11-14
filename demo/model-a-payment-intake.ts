@@ -48,6 +48,21 @@ export type ModelAPaymentIntentInput = {
   reason?: string;
 };
 
+export type ModelAInboxAcknowledgment = {
+  acknowledgedAtUnix: number;
+  duplicate: boolean;
+};
+
+export type StoredModelAInboxAck = {
+  version: 1;
+  kind: "model-a-inbox-ack";
+  network: "devnet";
+  vault: string;
+  agentAuthority: string;
+  requestId: string;
+  acknowledgedAtUnix: number;
+};
+
 export type StoredModelAPaymentIntent = {
   version: 1;
   kind: "model-a-payment-intent";
@@ -57,6 +72,10 @@ export type StoredModelAPaymentIntent = {
   principalId: string;
   createdAtUnix: number;
   request: ModelAPaymentIntentInput;
+  delivery?: {
+    acknowledged: boolean;
+    acknowledgedAtUnix?: number;
+  };
 };
 
 export class PaymentIntentConflict extends Error {
@@ -289,8 +308,9 @@ export function readModelAPaymentIntent(args: {
   runtimeDir: string;
   trustedScope: TrustedPaymentIntakeScope;
   requestId: string;
+  includeDelivery?: boolean;
 }): StoredModelAPaymentIntent | null {
-  const { runtimeDir, trustedScope, requestId } = args;
+  const { runtimeDir, trustedScope, requestId, includeDelivery = false } = args;
   validateTrustedScope(trustedScope);
   if (!REQUEST_ID_RE.test(requestId)) throw new Error("Invalid request ID");
   const { path } = journalPath(runtimeDir, trustedScope, requestId);
@@ -321,5 +341,180 @@ export function readModelAPaymentIntent(args: {
   } catch {
     throw new Error("Stored request invalid; manual reconciliation required");
   }
+  if (includeDelivery) {
+    const ack = readModelAPaymentIntentAcknowledgment({
+      runtimeDir,
+      vault: trustedScope.vault,
+      requestId,
+    });
+    return { ...record, delivery: ack };
+  }
   return record;
+}
+
+function ackJournalPath(
+  runtimeDir: string,
+  network: string,
+  vault: string,
+  requestId: string
+): { dir: string; path: string } {
+  const digest = createHash("sha256")
+    .update(JSON.stringify([network, vault, requestId]))
+    .digest("hex");
+  const dir = join(runtimeDir, "payment-intent-acks");
+  return { dir, path: join(dir, `${digest}.json`) };
+}
+
+/**
+ * Record a durable delivery acknowledgment for an unexpired, received intent.
+ * This is proof of agent delivery ONLY, NOT authorization or payment.
+ */
+export function acknowledgeModelAPaymentIntent(args: {
+  runtimeDir: string;
+  vault: string;
+  agentAuthority: string;
+  requestId: string;
+  nowUnix: number;
+}): ModelAInboxAcknowledgment {
+  const { runtimeDir, vault, agentAuthority, requestId, nowUnix } = args;
+  requirePubkey(vault, "scoped vault");
+  requirePubkey(agentAuthority, "agent authority");
+  if (!REQUEST_ID_RE.test(requestId)) throw new Error("Invalid request ID");
+  if (!Number.isSafeInteger(nowUnix) || nowUnix < 0) {
+    throw new Error("Invalid server time");
+  }
+
+  // Verify the underlying payment intent exists and is unexpired for this agent.
+  const intentDigest = createHash("sha256")
+    .update(JSON.stringify(["devnet", vault, requestId]))
+    .digest("hex");
+  const intentPath = join(
+    runtimeDir,
+    "payment-intent-inbox",
+    `${intentDigest}.json`
+  );
+
+  let rawIntent: string;
+  try {
+    rawIntent = readFileSync(intentPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("Payment intent not found");
+    }
+    throw error;
+  }
+
+  const stored = JSON.parse(rawIntent) as StoredModelAPaymentIntent;
+  if (
+    stored.status !== "received" ||
+    stored.vault !== vault ||
+    stored.request.agentAuthority !== agentAuthority ||
+    stored.request.requestId !== requestId
+  ) {
+    throw new Error("Payment intent does not match agent authority");
+  }
+
+  if (nowUnix < stored.createdAtUnix) {
+    throw new Error("Acknowledgment time before creation");
+  }
+
+  if (BigInt(nowUnix) >= BigInt(stored.request.expiresAtUnix)) {
+    throw new Error("Payment intent expired");
+  }
+
+  const { dir, path } = ackJournalPath(runtimeDir, "devnet", vault, requestId);
+  const ackRecord: StoredModelAInboxAck = {
+    version: 1,
+    kind: "model-a-inbox-ack",
+    network: "devnet",
+    vault,
+    agentAuthority,
+    requestId,
+    acknowledgedAtUnix: nowUnix,
+  };
+
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  let fd: number;
+  try {
+    fd = openSync(path, "wx", 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    let existing: StoredModelAInboxAck;
+    try {
+      existing = JSON.parse(readFileSync(path, "utf8")) as StoredModelAInboxAck;
+    } catch {
+      throw new Error("Corrupt acknowledgment file");
+    }
+    if (
+      existing.version !== 1 ||
+      existing.kind !== "model-a-inbox-ack" ||
+      existing.vault !== vault ||
+      existing.agentAuthority !== agentAuthority ||
+      existing.requestId !== requestId
+    ) {
+      throw new Error("Acknowledgment conflict");
+    }
+    return {
+      acknowledgedAtUnix: existing.acknowledgedAtUnix,
+      duplicate: true,
+    };
+  }
+
+  try {
+    writeFileSync(fd, JSON.stringify(ackRecord) + "\n");
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+
+  const dirFd = openSync(dir, "r");
+  try {
+    fsyncSync(dirFd);
+  } finally {
+    closeSync(dirFd);
+  }
+
+  return { acknowledgedAtUnix: nowUnix, duplicate: false };
+}
+
+/** Check whether a payment intent has been durably acknowledged by its agent. */
+export function readModelAPaymentIntentAcknowledgment(args: {
+  runtimeDir: string;
+  vault: string;
+  requestId: string;
+}): { acknowledged: boolean; acknowledgedAtUnix?: number } {
+  const { runtimeDir, vault, requestId } = args;
+  requirePubkey(vault, "scoped vault");
+  if (!REQUEST_ID_RE.test(requestId)) throw new Error("Invalid request ID");
+
+  const { path } = ackJournalPath(runtimeDir, "devnet", vault, requestId);
+  let content: string;
+  try {
+    content = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { acknowledged: false };
+    }
+    throw error;
+  }
+
+  try {
+    const parsed = JSON.parse(content) as StoredModelAInboxAck;
+    if (
+      parsed.version === 1 &&
+      parsed.kind === "model-a-inbox-ack" &&
+      parsed.vault === vault &&
+      parsed.requestId === requestId &&
+      Number.isSafeInteger(parsed.acknowledgedAtUnix)
+    ) {
+      return {
+        acknowledged: true,
+        acknowledgedAtUnix: parsed.acknowledgedAtUnix,
+      };
+    }
+  } catch {
+    /* corrupt */
+  }
+
+  return { acknowledged: false };
 }

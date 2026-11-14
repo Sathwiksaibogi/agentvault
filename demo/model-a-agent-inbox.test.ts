@@ -7,7 +7,10 @@ import { createServer, type Server } from "node:http";
 import { Keypair } from "@solana/web3.js";
 import bs58 from "bs58";
 import nacl from "tweetnacl";
-import { receiveModelAPaymentIntent } from "./model-a-payment-intake";
+import {
+  readModelAPaymentIntent,
+  receiveModelAPaymentIntent,
+} from "./model-a-payment-intake";
 import {
   createModelAAgentInboxHttpHandler,
   discoverAgentInbox,
@@ -92,7 +95,7 @@ async function start(
     throw new Error("Invalid test server");
   const base = `http://127.0.0.1:${address.port}/api/model-a/agent-inbox`;
   const post = async (
-    path: "challenge" | "poll",
+    path: "challenge" | "poll" | "ack",
     body: unknown,
     headers: Record<string, string> = {}
   ) => {
@@ -122,7 +125,17 @@ async function start(
     );
     return post("poll", { nonce: ch.nonce, signature });
   }
-  return { post, challenge, poll };
+  async function ack(
+    ch: { nonce: string; message: string },
+    signer: Keypair,
+    requestId: string
+  ) {
+    const signature = bs58.encode(
+      nacl.sign.detached(new TextEncoder().encode(ch.message), signer.secretKey)
+    );
+    return post("ack", { nonce: ch.nonce, signature, requestId });
+  }
+  return { post, challenge, poll, ack };
 }
 
 test("an authenticated agent discovers only its own vault's unexpired requests", async () => {
@@ -324,4 +337,88 @@ test("no inbox directory returns an empty list", () => {
     }),
     []
   );
+});
+
+test("authenticated agent can acknowledge delivery and reflect in status retrieval", async () => {
+  const f = setup();
+  f.add({ id: "request_ack_01" });
+
+  const http = await start(f.dir);
+
+  // Poll first to discover request
+  const chPoll = await http.challenge(f.vaultA, f.agentA);
+  const pollRes = await http.poll(chPoll, f.agentA);
+  assert.equal(pollRes.status, 200);
+
+  // Before acknowledgment, intent has delivery.acknowledged === false
+  const beforeAck = readModelAPaymentIntent({
+    runtimeDir: f.dir,
+    trustedScope: {
+      network: "devnet",
+      vault: f.vaultA,
+      principalId: "research-agent",
+      nowUnix,
+    },
+    requestId: "request_ack_01",
+    includeDelivery: true,
+  });
+  assert.ok(beforeAck);
+  assert.equal(beforeAck?.delivery?.acknowledged, false);
+
+  // Agent requests fresh challenge and acknowledges delivery
+  const chAck = await http.challenge(f.vaultA, f.agentA);
+  const ackRes = await http.ack(chAck, f.agentA, "request_ack_01");
+  assert.equal(ackRes.status, 200);
+  assert.equal(ackRes.json.duplicate, false);
+  assert.equal(ackRes.json.requestId, "request_ack_01");
+  assert.equal(ackRes.json.vault, f.vaultA);
+  assert.equal(ackRes.json.agentAuthority, f.agentA.publicKey.toBase58());
+  assert.equal(typeof ackRes.json.acknowledgedAtUnix, "number");
+
+  // Re-acknowledging the same intent is idempotent
+  const chRetry = await http.challenge(f.vaultA, f.agentA);
+  const retryRes = await http.ack(chRetry, f.agentA, "request_ack_01");
+  assert.equal(retryRes.status, 200);
+  assert.equal(retryRes.json.duplicate, true);
+  assert.equal(
+    retryRes.json.acknowledgedAtUnix,
+    ackRes.json.acknowledgedAtUnix
+  );
+
+  // After acknowledgment, status read reflects durable acknowledgment
+  const afterAck = readModelAPaymentIntent({
+    runtimeDir: f.dir,
+    trustedScope: {
+      network: "devnet",
+      vault: f.vaultA,
+      principalId: "research-agent",
+      nowUnix,
+    },
+    requestId: "request_ack_01",
+    includeDelivery: true,
+  });
+  assert.ok(afterAck);
+  assert.equal(afterAck?.delivery?.acknowledged, true);
+  assert.equal(
+    afterAck?.delivery?.acknowledgedAtUnix,
+    ackRes.json.acknowledgedAtUnix
+  );
+});
+
+test("acknowledgment rejects wrong agent, non-existent request, or expired intent", async () => {
+  const f = setup();
+  f.add({ id: "request_for_a", agent: f.agentA });
+  f.add({ id: "request_expired", agent: f.agentA, expiresIn: 1 });
+
+  const http = await start(f.dir);
+
+  // Agent B cannot acknowledge Agent A's intent
+  const chB = await http.challenge(f.vaultA, f.agentB);
+  const resWrongAgent = await http.ack(chB, f.agentB, "request_for_a");
+  assert.equal(resWrongAgent.status, 404);
+
+  // Agent A cannot acknowledge nonexistent request
+  const chA1 = await http.challenge(f.vaultA, f.agentA);
+  const resNotFound = await http.ack(chA1, f.agentA, "request_nonexistent");
+  assert.equal(resNotFound.status, 404);
 });

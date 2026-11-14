@@ -108,13 +108,48 @@ async function main(): Promise<void> {
       recipient: request.recipient,
     });
   }
+  const ackRequestId = process.env.AGENTVAULT_ACK_REQUEST_ID;
+  if (ackRequestId) {
+    const ackChallenge = (await jsonPost("challenge", {
+      vault,
+      agentAuthority: signer.publicKey.toBase58(),
+    })) as {
+      nonce?: unknown;
+      message?: unknown;
+    };
+    if (
+      typeof ackChallenge.nonce !== "string" ||
+      typeof ackChallenge.message !== "string"
+    ) {
+      throw new Error("Unexpected inbox challenge for ack");
+    }
+    const ackSignature = bs58.encode(
+      nacl.sign.detached(
+        new TextEncoder().encode(ackChallenge.message),
+        signer.secretKey
+      )
+    );
+    const ackResult = (await jsonPost("ack", {
+      nonce: ackChallenge.nonce,
+      signature: ackSignature,
+      requestId: ackRequestId,
+    })) as {
+      requestId?: unknown;
+      acknowledgedAtUnix?: unknown;
+      duplicate?: unknown;
+    };
+    console.log("Acknowledged request:", ackResult.requestId);
+    console.log("Acknowledged at:", ackResult.acknowledgedAtUnix);
+    console.log("Duplicate ack:", ackResult.duplicate);
+  }
+
   console.log("READ ONLY: no request has been approved, claimed or paid.");
 }
 
 main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : "";
 
-  if (/^Agent inbox (challenge|poll) HTTP [1-5][0-9][0-9]$/.test(message)) {
+  if (/^Agent inbox (challenge|poll|ack) HTTP [1-5][0-9][0-9]$/.test(message)) {
     console.error(message);
   } else {
     const category = error instanceof Error ? error.name : "unknown";

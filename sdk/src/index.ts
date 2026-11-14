@@ -7,6 +7,9 @@ export {
 export type {
   ActivityEntry,
   Agent,
+  AgentInboxAckResult,
+  AgentInboxChallenge,
+  AgentInboxPollResult,
   AgentVaultClientOptions,
   ModelAPaymentIntentAccepted,
   ModelAPaymentIntentInput,

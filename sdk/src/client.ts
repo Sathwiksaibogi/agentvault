@@ -1,6 +1,9 @@
 import type {
   ActivityEntry,
   Agent,
+  AgentInboxAckResult,
+  AgentInboxChallenge,
+  AgentInboxPollResult,
   AgentVaultClientOptions,
   ModelAPaymentIntentAccepted,
   ModelAPaymentIntentInput,
@@ -320,6 +323,170 @@ export class AgentVaultClient {
       throw new AgentVaultProtocolError(path);
     }
     return body;
+  }
+
+  /**
+   * Request an agent inbox challenge for discovery or delivery acknowledgment.
+   * Challenge TTL is 60 seconds on the server.
+   */
+  async requestAgentInboxChallenge(args: {
+    vault: string;
+    agentAuthority: string;
+  }): Promise<AgentInboxChallenge> {
+    if (!args || typeof args !== "object")
+      throw new TypeError("args is required");
+    if (!isText(args.vault))
+      throw new TypeError("vault must be a non-empty string");
+    if (!isText(args.agentAuthority))
+      throw new TypeError("agentAuthority must be a non-empty string");
+    const path = "/api/model-a/agent-inbox/challenge";
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.origin}${path}`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          vault: args.vault,
+          agentAuthority: args.agentAuthority,
+        }),
+        redirect: "error",
+        cache: "no-store",
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch {
+      throw new AgentVaultTransportError(path);
+    }
+    if (!response.ok) throw new AgentVaultHttpError(path, response.status);
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new AgentVaultProtocolError(path);
+    }
+    if (
+      !isObject(body) ||
+      !isText(body.nonce) ||
+      !isText(body.message) ||
+      !isInteger(body.expiresAtUnix)
+    ) {
+      throw new AgentVaultProtocolError(path);
+    }
+    return body as unknown as AgentInboxChallenge;
+  }
+
+  /**
+   * Poll for unexpired Model A payment intents addressed to this signed agent.
+   */
+  async pollAgentInbox(args: {
+    nonce: string;
+    signature: string;
+  }): Promise<AgentInboxPollResult> {
+    if (!args || typeof args !== "object")
+      throw new TypeError("args is required");
+    if (!isText(args.nonce))
+      throw new TypeError("nonce must be a non-empty string");
+    if (!isText(args.signature))
+      throw new TypeError("signature must be a non-empty string");
+    const path = "/api/model-a/agent-inbox/poll";
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.origin}${path}`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          nonce: args.nonce,
+          signature: args.signature,
+        }),
+        redirect: "error",
+        cache: "no-store",
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch {
+      throw new AgentVaultTransportError(path);
+    }
+    if (!response.ok) throw new AgentVaultHttpError(path, response.status);
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new AgentVaultProtocolError(path);
+    }
+    if (
+      !isObject(body) ||
+      body.network !== "devnet" ||
+      !isText(body.vault) ||
+      !isText(body.agentAuthority) ||
+      !Array.isArray(body.items) ||
+      !isText(body.notice)
+    ) {
+      throw new AgentVaultProtocolError(path);
+    }
+    return body as unknown as AgentInboxPollResult;
+  }
+
+  /**
+   * Durably record delivery acknowledgment for an inbox payment intent.
+   */
+  async acknowledgeAgentInboxItem(args: {
+    nonce: string;
+    signature: string;
+    requestId: string;
+  }): Promise<AgentInboxAckResult> {
+    if (!args || typeof args !== "object")
+      throw new TypeError("args is required");
+    if (!isText(args.nonce))
+      throw new TypeError("nonce must be a non-empty string");
+    if (!isText(args.signature))
+      throw new TypeError("signature must be a non-empty string");
+    if (!isRequestId(args.requestId))
+      throw new TypeError("requestId must match [a-zA-Z0-9_-]{8,64}");
+    const path = "/api/model-a/agent-inbox/ack";
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.origin}${path}`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          nonce: args.nonce,
+          signature: args.signature,
+          requestId: args.requestId,
+        }),
+        redirect: "error",
+        cache: "no-store",
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch {
+      throw new AgentVaultTransportError(path);
+    }
+    if (!response.ok) throw new AgentVaultHttpError(path, response.status);
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new AgentVaultProtocolError(path);
+    }
+    if (
+      !isObject(body) ||
+      body.network !== "devnet" ||
+      !isText(body.vault) ||
+      !isText(body.agentAuthority) ||
+      body.requestId !== args.requestId ||
+      !isInteger(body.acknowledgedAtUnix) ||
+      typeof body.duplicate !== "boolean" ||
+      !isText(body.notice)
+    ) {
+      throw new AgentVaultProtocolError(path);
+    }
+    return body as unknown as AgentInboxAckResult;
   }
 
   private async getJson(path: string): Promise<unknown> {
