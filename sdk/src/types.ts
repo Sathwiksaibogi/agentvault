@@ -105,10 +105,18 @@ export interface ModelAPaymentIntentAccepted {
 export interface StoredModelAPaymentExecution {
   claimed: boolean;
   prepared: boolean;
-  status: "unclaimed" | "claimed" | "prepared" | "rejected";
+  status:
+    | "unclaimed"
+    | "claimed"
+    | "prepared"
+    | "confirmed"
+    | "failed_on_chain"
+    | "rejected"
+    | "expired_unresolved";
   signature?: string;
   nonce?: string;
   rejectionReason?: string;
+  failureReason?: string;
 }
 
 /** GET /api/model-a/payment-intents/:requestId. */

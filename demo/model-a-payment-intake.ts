@@ -67,10 +67,18 @@ export type StoredModelAInboxAck = {
 export type StoredModelAPaymentExecution = {
   claimed: boolean;
   prepared: boolean;
-  status: "unclaimed" | "claimed" | "prepared" | "rejected";
+  status:
+    | "unclaimed"
+    | "claimed"
+    | "prepared"
+    | "confirmed"
+    | "failed_on_chain"
+    | "rejected"
+    | "expired_unresolved";
   signature?: string;
   nonce?: string;
   rejectionReason?: string;
+  failureReason?: string;
 };
 
 export type StoredModelAPaymentIntent = {
@@ -408,6 +416,39 @@ export function readModelAPaymentExecution(
         prepared: false,
         status: "rejected",
       };
+    }
+  }
+
+  const confirmedPath = join(journalDir, `${requestId}.confirmed.json`);
+  if (existsSync(confirmedPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(confirmedPath, "utf8"));
+      return {
+        claimed: true,
+        prepared: true,
+        status: "confirmed",
+        signature: parsed.signature,
+        nonce: parsed.nonce,
+      };
+    } catch {
+      return { claimed: true, prepared: true, status: "confirmed" };
+    }
+  }
+
+  const failedPath = join(journalDir, `${requestId}.failed.json`);
+  if (existsSync(failedPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(failedPath, "utf8"));
+      return {
+        claimed: true,
+        prepared: true,
+        status: "failed_on_chain",
+        signature: parsed.signature,
+        nonce: parsed.nonce,
+        failureReason: parsed.reason,
+      };
+    } catch {
+      return { claimed: true, prepared: true, status: "failed_on_chain" };
     }
   }
 

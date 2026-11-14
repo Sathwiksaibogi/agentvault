@@ -258,8 +258,12 @@ function makeWorkerHarness() {
     nowUnix: NOW,
   };
 
-  function createIntent(requestId: string, overrides: Partial<any> = {}) {
-    return receiveModelAPaymentIntent({
+  function createIntent(
+    requestId: string,
+    overrides: Partial<any> = {},
+    autoAck = true
+  ) {
+    const received = receiveModelAPaymentIntent({
       runtimeDir,
       trustedScope,
       input: {
@@ -273,6 +277,16 @@ function makeWorkerHarness() {
         ...overrides,
       },
     });
+    if (autoAck) {
+      acknowledgeModelAPaymentIntent({
+        runtimeDir,
+        vault: vaultKey.toBase58(),
+        agentAuthority: agentAuthority.publicKey.toBase58(),
+        requestId,
+        nowUnix: NOW,
+      });
+    }
+    return received;
   }
 
   function createWorker(customOptions: Partial<ModelAWorkerOptions> = {}) {
@@ -284,6 +298,10 @@ function makeWorkerHarness() {
       agentSigner: agentAuthority,
       rpc,
       program,
+      authorizePayment: async () => ({
+        decision: "PAY",
+        reason: "Test authorized",
+      }),
       now: () => NOW * 1000,
       ...customOptions,
     });
@@ -314,7 +332,7 @@ function makeWorkerHarness() {
 test("duplicate delivery: acknowledging delivery twice is idempotent", async () => {
   const h = makeWorkerHarness();
   try {
-    h.createIntent("req_ack_dup_01");
+    h.createIntent("req_ack_dup_01", {}, false);
     const ack1 = acknowledgeModelAPaymentIntent({
       runtimeDir: h.runtimeDir,
       vault: h.vaultKey.toBase58(),
@@ -626,10 +644,10 @@ test("uncertain transaction status: expired blockhash without RPC record enters 
   }
 });
 
-test("live execution boundary: live_devnet mode throws without explicit owner approval flag", async () => {
+test("live execution boundary: disabled execution never claims, signs, or broadcasts (agentSigner)", async () => {
   const h = makeWorkerHarness();
   try {
-    const intent = h.createIntent("req_live_boundary_01").record;
+    const intent = h.createIntent("req_live_gate_01").record;
     delete process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST;
 
     const worker = h.createWorker({
@@ -644,22 +662,314 @@ test("live execution boundary: live_devnet mode throws without explicit owner ap
     const claimPath = join(
       h.runtimeDir,
       "journal",
-      "req_live_boundary_01.json"
+      "req_live_gate_01.json"
     );
     assert.ok(
-      existsSync(claimPath),
-      "Request was claimed before execution boundary check"
+      !existsSync(claimPath),
+      "Request must NOT be claimed when live execution is disabled"
     );
     const signedPath = join(
       h.runtimeDir,
       "journal",
-      "req_live_boundary_01.signed.json"
+      "req_live_gate_01.signed.json"
     );
     assert.ok(
       !existsSync(signedPath),
-      "No signed transaction persisted when live execution is prohibited"
+      "No signed transaction persisted when live execution is disabled"
     );
   } finally {
+    h.cleanup();
+  }
+});
+
+test("live execution boundary: disabled execution never claims, signs, or broadcasts (signTransaction adapter)", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const intent = h.createIntent("req_live_gate_02").record;
+    delete process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST;
+
+    let adapterSignCalled = false;
+    const worker = h.createWorker({
+      agentSigner: undefined,
+      adapter: {
+        mode: "live_devnet",
+        signTransaction: async (_authority, tx) => {
+          adapterSignCalled = true;
+          return tx;
+        },
+      },
+    });
+
+    await assert.rejects(
+      () => worker.processPaymentIntent(intent),
+      /Live autonomous transaction signing and broadcasting is prohibited/
+    );
+
+    assert.equal(
+      adapterSignCalled,
+      false,
+      "External signTransaction adapter must never be invoked when live execution is disabled"
+    );
+
+    const claimPath = join(
+      h.runtimeDir,
+      "journal",
+      "req_live_gate_02.json"
+    );
+    assert.ok(!existsSync(claimPath), "Claim must never be created");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("payment authorization & delivery: unacknowledged intent fails closed and is skipped in worker scan", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const unackedIntent = h.createIntent("req_unacked_01", {}, false).record;
+    const worker = h.createWorker();
+
+    // Direct execution fails closed
+    await assert.rejects(
+      () => worker.processPaymentIntent(unackedIntent),
+      /has not been acknowledged for delivery by agent inbox/
+    );
+
+    const claimPath = join(
+      h.runtimeDir,
+      "journal",
+      "req_unacked_01.json"
+    );
+    assert.ok(!existsSync(claimPath), "Unacknowledged intent must not be claimed");
+
+    // Background scan skips unacknowledged intents
+    const results = await worker.processPendingIntentsOnce();
+    assert.equal(
+      results.find((r) => r.requestId === "req_unacked_01"),
+      undefined,
+      "Unacknowledged intent must be skipped by worker polling"
+    );
+
+    // After acknowledgment, processing succeeds
+    acknowledgeModelAPaymentIntent({
+      runtimeDir: h.runtimeDir,
+      vault: h.vaultKey.toBase58(),
+      agentAuthority: h.agentAuthority.publicKey.toBase58(),
+      requestId: "req_unacked_01",
+      nowUnix: NOW,
+    });
+
+    const res = await worker.processPaymentIntent(unackedIntent);
+    assert.equal(res.status, "prepared");
+    assert.ok(existsSync(claimPath), "Acknowledged intent can be claimed");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("payment authorization & delivery: worker fails closed without explicit payment authorization callback", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const intent = h.createIntent("req_unauthorized_01").record;
+
+    // Delivery acknowledgment alone must NOT authorize payment
+    const worker = h.createWorker({
+      authorizePayment: undefined,
+      evaluateAi: undefined,
+    });
+
+    await assert.rejects(
+      () => worker.processPaymentIntent(intent),
+      /Missing required agent payment authorization callback/
+    );
+
+    const claimPath = join(
+      h.runtimeDir,
+      "journal",
+      "req_unauthorized_01.json"
+    );
+    assert.ok(
+      !existsSync(claimPath),
+      "Unauthorized intent must never be claimed"
+    );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("signed transaction integrity: external signing adapter returning tampered recipient fails closed", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const intent = h.createIntent("req_tamper_adapter_01").record;
+    const rogueRecipient = Keypair.generate();
+
+    const worker = h.createWorker({
+      agentSigner: undefined,
+      adapter: {
+        mode: "simulated",
+        signTransaction: async (_authority, tx) => {
+          // Attacker adapter alters instruction data/accounts
+          const tampered = new Transaction({
+            feePayer: h.agentAuthority.publicKey,
+            recentBlockhash: tx.recentBlockhash,
+          });
+          // Replace second instruction recipient with rogue recipient
+          tampered.add(tx.instructions[0]);
+          const badInstruction = new TransactionInstruction({
+            programId: tx.instructions[1].programId,
+            keys: tx.instructions[1].keys.map((k) =>
+              k.pubkey.equals(h.recipient.publicKey)
+                ? { ...k, pubkey: rogueRecipient.publicKey }
+                : k
+            ),
+            data: tx.instructions[1].data,
+          });
+          tampered.add(badInstruction);
+          tampered.sign(h.agentAuthority);
+          return tampered;
+        },
+      },
+    });
+
+    await assert.rejects(
+      () => worker.processPaymentIntent(intent),
+      /account 6 address mismatch|Payment instruction lacks approved recipient/
+    );
+
+    const signedPath = join(
+      h.runtimeDir,
+      "journal",
+      "req_tamper_adapter_01.signed.json"
+    );
+    assert.ok(
+      !existsSync(signedPath),
+      "Tampered transaction must never be durably persisted as prepared payment"
+    );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("signed transaction integrity: live devnet execution requires RPC simulation capability", async () => {
+  const h = makeWorkerHarness();
+  try {
+    process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST = "true";
+    const intent = h.createIntent("req_live_no_sim_01").record;
+
+    const worker = h.createWorker({
+      adapter: { mode: "live_devnet" },
+      rpc: {
+        getGenesisHash: async () => GENESIS,
+        getLatestBlockhash: async () => ({
+          blockhash: VALID_BLOCKHASH,
+          lastValidBlockHeight: 100,
+        }),
+        getBlockHeight: async () => 50,
+        getAccountInfo: async () => ({
+          data: clockBuffer(NOW),
+          executable: false,
+          lamports: 1,
+          owner: SYSVAR_CLOCK_PUBKEY,
+        }),
+        simulateTransaction: undefined, // Missing simulation capability!
+      } as any,
+    });
+
+    await assert.rejects(
+      () => worker.processPaymentIntent(intent),
+      /RPC transaction simulation capability is required for live Devnet execution/
+    );
+  } finally {
+    delete process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST;
+    h.cleanup();
+  }
+});
+
+test("durable execution state: confirmed and failed on-chain payments are recorded and exposed through payment-intent API", async () => {
+  const h = makeWorkerHarness();
+  try {
+    process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST = "true";
+
+    // 1. Test confirmed payment recording
+    const intentSuccess = h.createIntent("req_durable_confirm_01").record;
+    let sentRaw: Buffer | null = null;
+    const workerSuccess = h.createWorker({
+      adapter: { mode: "live_devnet" },
+      rpc: {
+        getGenesisHash: async () => GENESIS,
+        getLatestBlockhash: async () => ({
+          blockhash: VALID_BLOCKHASH,
+          lastValidBlockHeight: 100,
+        }),
+        getBlockHeight: async () => 50,
+        getAccountInfo: async () => ({
+          data: clockBuffer(NOW),
+          executable: false,
+          lamports: 1,
+          owner: SYSVAR_CLOCK_PUBKEY,
+        }),
+        simulateTransaction: async () => ({ value: { err: null } }),
+        sendRawTransaction: async (raw: Buffer) => {
+          sentRaw = raw;
+          return "5ConfirmedSig111111111111111111111111111111111111111111111111111111111111111111111111111111";
+        },
+        confirmTransaction: async () => ({ value: { err: null } }),
+      } as any,
+    });
+
+    const resSuccess = await workerSuccess.processPaymentIntent(intentSuccess);
+    assert.equal(resSuccess.status, "confirmed");
+    assert.ok(sentRaw);
+
+    const readSuccess = readModelAPaymentIntent({
+      runtimeDir: h.runtimeDir,
+      trustedScope: h.trustedScope,
+      requestId: "req_durable_confirm_01",
+      includeExecution: true,
+    });
+    assert.equal(readSuccess?.execution?.status, "confirmed");
+    assert.equal(
+      readSuccess?.execution?.signature,
+      "5ConfirmedSig111111111111111111111111111111111111111111111111111111111111111111111111111111"
+    );
+
+    // 2. Test failed on-chain payment recording
+    const intentFail = h.createIntent("req_durable_fail_01").record;
+    const workerFail = h.createWorker({
+      adapter: { mode: "live_devnet" },
+      rpc: {
+        getGenesisHash: async () => GENESIS,
+        getLatestBlockhash: async () => ({
+          blockhash: VALID_BLOCKHASH,
+          lastValidBlockHeight: 100,
+        }),
+        getBlockHeight: async () => 50,
+        getAccountInfo: async () => ({
+          data: clockBuffer(NOW),
+          executable: false,
+          lamports: 1,
+          owner: SYSVAR_CLOCK_PUBKEY,
+        }),
+        simulateTransaction: async () => ({ value: { err: null } }),
+        sendRawTransaction: async () => "5FailedSig1111111111111111111111111111111111111111111111111111111111111111111111111111111",
+        confirmTransaction: async () => ({
+          value: { err: { InstructionError: [1, "Custom 6001"] } },
+        }),
+      } as any,
+    });
+
+    const resFail = await workerFail.processPaymentIntent(intentFail);
+    assert.equal(resFail.status, "failed_on_chain");
+
+    const readFail = readModelAPaymentIntent({
+      runtimeDir: h.runtimeDir,
+      trustedScope: h.trustedScope,
+      requestId: "req_durable_fail_01",
+      includeExecution: true,
+    });
+    assert.equal(readFail?.execution?.status, "failed_on_chain");
+    assert.ok(readFail?.execution?.failureReason?.includes("Custom 6001"));
+  } finally {
+    delete process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST;
     h.cleanup();
   }
 });

@@ -174,6 +174,13 @@ export type ModelAWorkerOptions = {
   };
   adapter?: ModelAExecutionAdapter;
   agentSigner?: Keypair;
+  readAck?: (args: {
+    vault: string;
+    requestId: string;
+  }) => { acknowledged: boolean; acknowledgedAtUnix?: number };
+  authorizePayment?: (
+    intent: StoredModelAPaymentIntent
+  ) => Promise<{ decision: "PAY" | "REJECT"; reason: string }>;
   evaluateAi?: (
     intent: StoredModelAPaymentIntent
   ) => Promise<{ decision: "PAY" | "REJECT"; reason: string }>;
@@ -212,6 +219,13 @@ export class ModelAWorker {
   private readonly program: ModelAWorkerOptions["program"];
   private readonly adapter: ModelAExecutionAdapter;
   private readonly agentSigner?: Keypair;
+  private readonly readAck?: (args: {
+    vault: string;
+    requestId: string;
+  }) => { acknowledged: boolean; acknowledgedAtUnix?: number };
+  private readonly authorizePayment?: (
+    intent: StoredModelAPaymentIntent
+  ) => Promise<{ decision: "PAY" | "REJECT"; reason: string }>;
   private readonly evaluateAi?: (
     intent: StoredModelAPaymentIntent
   ) => Promise<{ decision: "PAY" | "REJECT"; reason: string }>;
@@ -234,9 +248,21 @@ export class ModelAWorker {
     this.program = options.program;
     this.adapter = options.adapter ?? { mode: "simulated" };
     this.agentSigner = options.agentSigner;
+    this.readAck = options.readAck;
+    this.authorizePayment = options.authorizePayment;
     this.evaluateAi = options.evaluateAi;
     this.pollIntervalMs = options.pollIntervalMs ?? 2000;
     this.now = options.now ?? Date.now;
+  }
+
+  private assertLiveExecutionAllowed(): void {
+    if (this.adapter.mode === "live_devnet") {
+      if (process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST !== "true") {
+        throw new LiveExecutionProhibitedError(
+          "Live autonomous transaction signing and broadcasting is prohibited without explicit owner approval and AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST=true"
+        );
+      }
+    }
   }
 
   start(): void {
@@ -302,6 +328,18 @@ export class ModelAWorker {
           continue;
         }
 
+        // Verify delivery acknowledgment before processing
+        const ack = this.readAck
+          ? this.readAck({ vault: this.vault, requestId })
+          : readModelAPaymentIntentAcknowledgment({
+              runtimeDir: this.runtimeDir,
+              vault: this.vault,
+              requestId,
+            });
+        if (!ack.acknowledged) {
+          continue;
+        }
+
         // Check if previously claimed or rejected
         const claimPath = join(this.runtimeDir, "journal", `${requestId}.json`);
         const rejectedPath = join(
@@ -342,7 +380,26 @@ export class ModelAWorker {
   async processPaymentIntent(
     intent: StoredModelAPaymentIntent
   ): Promise<WorkerExecutionResult> {
+    // 0. Enforce live execution permission gate before claiming, signing, or preparing
+    this.assertLiveExecutionAllowed();
+
     const requestId = intent.request.requestId;
+
+    // Delivery acknowledgment is required before payment execution can proceed.
+    // Note: delivery acknowledgment alone is NOT payment authorization.
+    const ack = this.readAck
+      ? this.readAck({ vault: this.vault, requestId })
+      : readModelAPaymentIntentAcknowledgment({
+          runtimeDir: this.runtimeDir,
+          vault: this.vault,
+          requestId,
+        });
+    if (!ack.acknowledged) {
+      throw new Error(
+        `Payment intent ${requestId} has not been acknowledged for delivery by agent inbox`
+      );
+    }
+
     const vaultKey = new PublicKey(this.vault);
     const authority = new PublicKey(intent.request.agentAuthority);
     const recipient = new PublicKey(intent.request.recipient);
@@ -448,22 +505,29 @@ export class ModelAWorker {
 
       const currentNonce = taskAcc.nextNonce as BN;
 
-      // 3. AI / Deterministic Advisory Gate
-      if (this.evaluateAi) {
-        const evalResult = await this.evaluateAi(intent);
-        if (evalResult.decision === "REJECT") {
-          this.recordRejection(requestId, evalResult.reason);
-          return {
-            requestId,
-            vault: this.vault,
-            agentAuthority: intent.request.agentAuthority,
-            taskId: intent.request.taskId,
-            amountBaseUnits: intent.request.amountBaseUnits,
-            recipient: intent.request.recipient,
-            status: "rejected",
-            reason: evalResult.reason,
-          };
-        }
+      // 3. Authoritative Agent-Authorization Gate
+      // Note: delivery acknowledgment alone is NOT authorization. An explicit payment-decision callback is mandatory.
+      const authCallback = this.evaluateAi ?? this.authorizePayment;
+      if (!authCallback) {
+        throw new Error(
+          "Missing required agent payment authorization callback (fail-closed); delivery acknowledgment alone does not authorize payment"
+        );
+      }
+      const evalResult = await authCallback(intent);
+      if (!evalResult || evalResult.decision !== "PAY") {
+        const reason =
+          evalResult?.reason || "Payment intent rejected by agent authorization policy";
+        this.recordRejection(requestId, reason);
+        return {
+          requestId,
+          vault: this.vault,
+          agentAuthority: intent.request.agentAuthority,
+          taskId: intent.request.taskId,
+          amountBaseUnits: intent.request.amountBaseUnits,
+          recipient: intent.request.recipient,
+          status: "rejected",
+          reason,
+        };
       }
 
       // 4. Atomic Journal Claim (exclusive file creation)
@@ -533,7 +597,12 @@ export class ModelAWorker {
 
       assertPaymentInstructions(transaction, expectedPayment);
 
-      // 6. Pre-broadcast simulation
+      // 6. Pre-broadcast simulation (Mandatory for live execution path)
+      if (this.adapter.mode === "live_devnet" && !this.rpc.simulateTransaction) {
+        throw new Error(
+          "RPC transaction simulation capability is required for live Devnet execution"
+        );
+      }
       if (this.rpc.simulateTransaction) {
         const message = new TransactionMessage({
           payerKey: authority,
@@ -555,16 +624,10 @@ export class ModelAWorker {
       }
 
       // 7. Transaction Signing & Preparation
+      this.assertLiveExecutionAllowed();
+
       let signedTx: Transaction;
       if (this.agentSigner) {
-        if (
-          this.adapter.mode === "live_devnet" &&
-          process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST !== "true"
-        ) {
-          throw new LiveExecutionProhibitedError(
-            "Live autonomous transaction signing and broadcasting is prohibited without explicit owner approval and AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST=true"
-          );
-        }
         transaction.sign(this.agentSigner);
         signedTx = transaction;
       } else if (this.adapter.signTransaction) {
@@ -574,6 +637,10 @@ export class ModelAWorker {
           "Agent signer keypair or signTransaction adapter required"
         );
       }
+
+      // Verify the final signed transaction against exact intended payment instructions,
+      // fee payer, program, task, amount, recipient, nonce and mint.
+      assertExactAgentVaultPayment(signedTx, expectedPayment);
 
       // 8. Persist signed transaction durably before any permitted broadcast
       const agentId = this.resolveAgentId(authority);
@@ -590,10 +657,13 @@ export class ModelAWorker {
       );
 
       const prepared = loadPreparedPayment(this.runtimeDir, requestId);
+      assertSerializedAgentVaultPayment(prepared.transaction, expectedPayment);
       const signature = bs58.encode(prepared.transaction.signature!);
 
-      // 9. Broadcast & Confirmation (Gated)
+      // 9. Broadcast & Confirmation (Gated again at broadcast boundary)
       if (this.adapter.mode === "live_devnet") {
+        this.assertLiveExecutionAllowed();
+
         if (this.rpc.sendRawTransaction && this.rpc.confirmTransaction) {
           const txSig = await this.rpc.sendRawTransaction(prepared.raw, {
             skipPreflight: false,
@@ -609,6 +679,12 @@ export class ModelAWorker {
             "confirmed"
           );
           if (confirmRes.value.err !== null) {
+            this.recordFailedOnChain(
+              requestId,
+              txSig,
+              currentNonce.toString(),
+              confirmRes.value.err
+            );
             return {
               requestId,
               vault: this.vault,
@@ -622,6 +698,7 @@ export class ModelAWorker {
               reason: JSON.stringify(confirmRes.value.err),
             };
           }
+          this.recordConfirmed(requestId, txSig, currentNonce.toString());
           return {
             requestId,
             vault: this.vault,
@@ -806,6 +883,58 @@ export class ModelAWorker {
     } catch {
       return; // Already recorded
     }
+    try {
+      writeFileSync(fd, JSON.stringify(record, null, 2) + "\n");
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  private recordConfirmed(
+    requestId: string,
+    signature: string,
+    nonce: string
+  ): void {
+    const journalDir = join(this.runtimeDir, "journal");
+    mkdirSync(journalDir, { recursive: true, mode: 0o700 });
+    const path = join(journalDir, `${requestId}.confirmed.json`);
+    const record = {
+      version: 1,
+      requestId,
+      status: "confirmed",
+      signature,
+      nonce,
+      confirmedAt: new Date(this.now()).toISOString(),
+    };
+    const fd = openSync(path, "w", 0o600);
+    try {
+      writeFileSync(fd, JSON.stringify(record, null, 2) + "\n");
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  private recordFailedOnChain(
+    requestId: string,
+    signature: string,
+    nonce: string,
+    err: unknown
+  ): void {
+    const journalDir = join(this.runtimeDir, "journal");
+    mkdirSync(journalDir, { recursive: true, mode: 0o700 });
+    const path = join(journalDir, `${requestId}.failed.json`);
+    const record = {
+      version: 1,
+      requestId,
+      status: "failed_on_chain",
+      signature,
+      nonce,
+      reason: JSON.stringify(err),
+      failedAt: new Date(this.now()).toISOString(),
+    };
+    const fd = openSync(path, "w", 0o600);
     try {
       writeFileSync(fd, JSON.stringify(record, null, 2) + "\n");
       fsyncSync(fd);
