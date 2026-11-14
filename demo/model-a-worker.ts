@@ -942,88 +942,36 @@ export class ModelAWorker {
       const signature = bs58.encode(prepared.transaction.signature!);
 
       // 9. Broadcast & Confirmation (Gated again at broadcast boundary)
-      if (this.adapter.mode === "live_devnet") {
+      if (this.rpc.sendRawTransaction && this.rpc.confirmTransaction) {
         this.assertLiveExecutionAllowed();
 
-        if (this.rpc.sendRawTransaction && this.rpc.confirmTransaction) {
-          const locallyPreparedSig = bs58.encode(prepared.transaction.signature!);
-          const txSig = await this.rpc.sendRawTransaction(prepared.raw, {
-            skipPreflight: false,
-            preflightCommitment: "confirmed",
-            maxRetries: 2,
-          });
+        const locallyPreparedSig = bs58.encode(prepared.transaction.signature!);
+        const txSig = await this.rpc.sendRawTransaction(prepared.raw, {
+          skipPreflight: false,
+          preflightCommitment: "confirmed",
+          maxRetries: 2,
+        });
 
-          // Verify RPC-returned transaction signature against locally prepared signed bytes
-          if (txSig !== locallyPreparedSig) {
-            throw new Error(
-              `RPC-returned transaction signature ${txSig} does not match locally signed signature ${locallyPreparedSig}`
-            );
-          }
+        // Verify RPC-returned transaction signature against locally prepared signed bytes
+        if (txSig !== locallyPreparedSig) {
+          throw new Error(
+            `RPC-returned transaction signature ${txSig} does not match locally signed signature ${locallyPreparedSig}`
+          );
+        }
 
-          let confirmRes: any;
-          try {
-            confirmRes = await this.rpc.confirmTransaction(
-              {
-                signature: txSig,
-                blockhash,
-                lastValidBlockHeight,
-              },
-              "confirmed"
-            );
-          } catch (confirmError) {
-            // Confirmation failed or timed out.
-            // Never mark an uncertain transaction as definitively failed!
-            return {
-              requestId,
-              vault: this.vault,
-              agentAuthority: authority.toBase58(),
-              taskId: intent.request.taskId,
-              amountBaseUnits: intent.request.amountBaseUnits,
-              recipient: recipient.toBase58(),
-              status: "prepared",
+        let confirmRes: any;
+        try {
+          confirmRes = await this.rpc.confirmTransaction(
+            {
               signature: txSig,
-              nonce: currentNonce.toString(),
-              reason: `Transaction broadcast uncertain; confirmation pending or timed out: ${(confirmError as Error).message}`,
-            };
-          }
-
-          if (confirmRes.value && confirmRes.value.err !== null) {
-            this.recordFailedOnChain(
-              requestId,
-              txSig,
-              currentNonce.toString(),
-              confirmRes.value.err
-            );
-            return {
-              requestId,
-              vault: this.vault,
-              agentAuthority: authority.toBase58(),
-              taskId: intent.request.taskId,
-              amountBaseUnits: intent.request.amountBaseUnits,
-              recipient: recipient.toBase58(),
-              status: "failed_on_chain",
-              signature: txSig,
-              nonce: currentNonce.toString(),
-              reason: JSON.stringify(confirmRes.value.err),
-            };
-          }
-
-          if (confirmRes.context?.slot && confirmRes.value?.confirmationStatus === "finalized") {
-            this.recordFinalized(requestId, txSig, currentNonce.toString());
-            return {
-              requestId,
-              vault: this.vault,
-              agentAuthority: authority.toBase58(),
-              taskId: intent.request.taskId,
-              amountBaseUnits: intent.request.amountBaseUnits,
-              recipient: recipient.toBase58(),
-              status: "confirmed",
-              signature: txSig,
-              nonce: currentNonce.toString(),
-            };
-          }
-
-          this.recordConfirmed(requestId, txSig, currentNonce.toString());
+              blockhash,
+              lastValidBlockHeight,
+            },
+            "confirmed"
+          );
+        } catch (confirmError) {
+          // Confirmation failed or timed out.
+          // Never mark an uncertain transaction as definitively failed!
           return {
             requestId,
             vault: this.vault,
@@ -1031,11 +979,61 @@ export class ModelAWorker {
             taskId: intent.request.taskId,
             amountBaseUnits: intent.request.amountBaseUnits,
             recipient: recipient.toBase58(),
-            status: "confirmed",
+            status: "prepared",
+            signature: txSig,
+            nonce: currentNonce.toString(),
+            reason: `Transaction broadcast uncertain; confirmation pending or timed out: ${(confirmError as Error).message}`,
+          };
+        }
+
+        if (confirmRes.value && confirmRes.value.err !== null) {
+          this.recordFailedOnChain(
+            requestId,
+            txSig,
+            currentNonce.toString(),
+            confirmRes.value.err
+          );
+          return {
+            requestId,
+            vault: this.vault,
+            agentAuthority: authority.toBase58(),
+            taskId: intent.request.taskId,
+            amountBaseUnits: intent.request.amountBaseUnits,
+            recipient: recipient.toBase58(),
+            status: "failed_on_chain",
+            signature: txSig,
+            nonce: currentNonce.toString(),
+            reason: JSON.stringify(confirmRes.value.err),
+          };
+        }
+
+        if (confirmRes.context?.slot && confirmRes.value?.confirmationStatus === "finalized") {
+          this.recordFinalized(requestId, txSig, currentNonce.toString());
+          return {
+            requestId,
+            vault: this.vault,
+            agentAuthority: authority.toBase58(),
+            taskId: intent.request.taskId,
+            amountBaseUnits: intent.request.amountBaseUnits,
+            recipient: recipient.toBase58(),
+            status: "finalized",
             signature: txSig,
             nonce: currentNonce.toString(),
           };
         }
+
+        this.recordConfirmed(requestId, txSig, currentNonce.toString());
+        return {
+          requestId,
+          vault: this.vault,
+          agentAuthority: authority.toBase58(),
+          taskId: intent.request.taskId,
+          amountBaseUnits: intent.request.amountBaseUnits,
+          recipient: recipient.toBase58(),
+          status: "confirmed",
+          signature: txSig,
+          nonce: currentNonce.toString(),
+        };
       }
 
       return {
