@@ -102,6 +102,15 @@ export interface ModelAPaymentIntentAccepted {
   notice: "Request only; not approved, queued for execution, or paid";
 }
 
+export interface StoredModelAPaymentExecution {
+  claimed: boolean;
+  prepared: boolean;
+  status: "unclaimed" | "claimed" | "prepared" | "rejected";
+  signature?: string;
+  nonce?: string;
+  rejectionReason?: string;
+}
+
 /** GET /api/model-a/payment-intents/:requestId. */
 export interface StoredModelAPaymentIntent {
   version: 1;
@@ -116,6 +125,7 @@ export interface StoredModelAPaymentIntent {
     acknowledged: boolean;
     acknowledgedAtUnix?: number;
   };
+  execution?: StoredModelAPaymentExecution;
 }
 
 export interface AgentInboxChallenge {

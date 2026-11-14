@@ -13,6 +13,7 @@
 import { createHash } from "node:crypto";
 import {
   closeSync,
+  existsSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -63,6 +64,15 @@ export type StoredModelAInboxAck = {
   acknowledgedAtUnix: number;
 };
 
+export type StoredModelAPaymentExecution = {
+  claimed: boolean;
+  prepared: boolean;
+  status: "unclaimed" | "claimed" | "prepared" | "rejected";
+  signature?: string;
+  nonce?: string;
+  rejectionReason?: string;
+};
+
 export type StoredModelAPaymentIntent = {
   version: 1;
   kind: "model-a-payment-intent";
@@ -76,6 +86,7 @@ export type StoredModelAPaymentIntent = {
     acknowledged: boolean;
     acknowledgedAtUnix?: number;
   };
+  execution?: StoredModelAPaymentExecution;
 };
 
 export class PaymentIntentConflict extends Error {
@@ -309,8 +320,20 @@ export function readModelAPaymentIntent(args: {
   trustedScope: TrustedPaymentIntakeScope;
   requestId: string;
   includeDelivery?: boolean;
+  includeExecution?: boolean;
+  readAck?: (args: {
+    vault: string;
+    requestId: string;
+  }) => { acknowledged: boolean; acknowledgedAtUnix?: number };
 }): StoredModelAPaymentIntent | null {
-  const { runtimeDir, trustedScope, requestId, includeDelivery = false } = args;
+  const {
+    runtimeDir,
+    trustedScope,
+    requestId,
+    includeDelivery = false,
+    includeExecution = true,
+    readAck,
+  } = args;
   validateTrustedScope(trustedScope);
   if (!REQUEST_ID_RE.test(requestId)) throw new Error("Invalid request ID");
   const { path } = journalPath(runtimeDir, trustedScope, requestId);
@@ -341,15 +364,83 @@ export function readModelAPaymentIntent(args: {
   } catch {
     throw new Error("Stored request invalid; manual reconciliation required");
   }
+
+  const result: StoredModelAPaymentIntent = { ...record };
+
   if (includeDelivery) {
-    const ack = readModelAPaymentIntentAcknowledgment({
-      runtimeDir,
-      vault: trustedScope.vault,
-      requestId,
-    });
-    return { ...record, delivery: ack };
+    result.delivery = readAck
+      ? readAck({ vault: trustedScope.vault, requestId })
+      : readModelAPaymentIntentAcknowledgment({
+          runtimeDir,
+          vault: trustedScope.vault,
+          requestId,
+        });
   }
-  return record;
+
+  if (includeExecution) {
+    result.execution = readModelAPaymentExecution(runtimeDir, requestId);
+  }
+
+  return result;
+}
+
+/** Check execution and journal status for a payment intent. */
+export function readModelAPaymentExecution(
+  runtimeDir: string,
+  requestId: string
+): StoredModelAPaymentExecution {
+  if (!REQUEST_ID_RE.test(requestId)) throw new Error("Invalid request ID");
+
+  const journalDir = join(runtimeDir, "journal");
+  const rejectedPath = join(journalDir, `${requestId}.rejected.json`);
+  if (existsSync(rejectedPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(rejectedPath, "utf8"));
+      return {
+        claimed: false,
+        prepared: false,
+        status: "rejected",
+        rejectionReason: String(parsed.reason ?? "Rejected"),
+      };
+    } catch {
+      return {
+        claimed: false,
+        prepared: false,
+        status: "rejected",
+      };
+    }
+  }
+
+  const signedPath = join(journalDir, `${requestId}.signed.json`);
+  if (existsSync(signedPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(signedPath, "utf8"));
+      return {
+        claimed: true,
+        prepared: true,
+        status: "prepared",
+        signature: parsed.signatureBase64,
+        nonce: parsed.nonce,
+      };
+    } catch {
+      return { claimed: true, prepared: true, status: "prepared" };
+    }
+  }
+
+  const claimPath = join(journalDir, `${requestId}.json`);
+  if (existsSync(claimPath)) {
+    return {
+      claimed: true,
+      prepared: false,
+      status: "claimed",
+    };
+  }
+
+  return {
+    claimed: false,
+    prepared: false,
+    status: "unclaimed",
+  };
 }
 
 function ackJournalPath(
