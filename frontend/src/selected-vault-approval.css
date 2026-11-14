@@ -1,0 +1,166 @@
+.av-approval-panel {
+  max-width: 1080px;
+  padding: 32px;
+  border: 1px solid #29303d;
+  border-radius: 20px;
+  background: linear-gradient(138deg, #171b24, #12141b);
+  color: #f4f4f6;
+}
+.av-approval-heading {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  margin-bottom: 28px;
+}
+.av-approval-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  height: 58px;
+  flex-shrink: 0;
+  border-radius: 16px;
+  background: #fc86671f;
+  color: #ff886c;
+}
+.av-approval-heading h2 {
+  font-size: 26px;
+  line-height: 1.2;
+  margin: 4px 0 9px;
+}
+.av-approval-heading p {
+  color: #afb6c6;
+  font-size: 14px;
+  line-height: 1.7;
+  margin: 0;
+}
+.av-approval-heading .av-approval-eyebrow {
+  color: #ff9174;
+  letter-spacing: 1.6px;
+  font-size: 11px;
+  font-weight: 800;
+}
+.av-approval-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+.av-approval-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  font-weight: 650;
+  font-size: 13px;
+}
+.av-approval-grid .av-approval-wide {
+  grid-column: 1/-1;
+}
+.av-approval-grid select,
+.av-approval-grid input,
+.av-approval-grid textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 14px 15px;
+  border: 1px solid #343845;
+  border-radius: 11px;
+  background: #0d1018;
+  color: #f2f3f7;
+  box-sizing: border-box;
+  font: inherit;
+  font-weight: 450;
+  resize: vertical;
+}
+.av-approval-grid select:focus,
+.av-approval-grid input:focus,
+.av-approval-grid textarea:focus {
+  outline: 2px solid #f47c57;
+  outline-offset: 2px;
+}
+.av-approval-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 22px 0;
+  padding: 17px 20px;
+  background: #0d121a;
+  border: 1px solid #26303a;
+  border-radius: 12px;
+  color: #b8c0cd;
+  font-size: 13px;
+}
+.av-approval-summary code {
+  overflow-wrap: anywhere;
+  color: #fff;
+}
+.av-approval-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 23px 0;
+  max-width: 850px;
+  color: #c5c9d3;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.av-approval-confirm input {
+  accent-color: #ff8a6b;
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  margin-top: 2px;
+}
+.av-approval-submit {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  background: #ff8765;
+  color: #1d1010;
+  font-weight: 750;
+  border: 0;
+  border-radius: 12px;
+  cursor: pointer;
+}
+.av-approval-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.av-approval-error,
+.av-approval-success {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 12px;
+  margin: 15px 0;
+  border-radius: 10px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.av-approval-error {
+  border: 1px solid #83383e;
+  color: #ff969e;
+  background: #2d151b;
+}
+.av-approval-success {
+  border: 1px solid #275d50;
+  color: #93e7cc;
+  background: #10251f;
+}
+.av-approval-foot {
+  color: #929ba9;
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 17px 0 0;
+}
+@media (max-width: 740px) {
+  .av-approval-panel {
+    padding: 20px;
+  }
+  .av-approval-grid {
+    grid-template-columns: 1fr;
+  }
+  .av-approval-heading {
+    flex-direction: column;
+  }
+}

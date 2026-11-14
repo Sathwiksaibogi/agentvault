@@ -1,0 +1,613 @@
+/* AgentVault owner console refinements · presentation only */
+.av-console-page .av-console-freshness {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  margin: -10px 0 21px;
+  color: #a7d9c3;
+  background: rgba(80, 174, 132, 0.065);
+  border: 1px solid rgba(90, 178, 134, 0.16);
+  border-radius: 10px;
+  font-size: 11px;
+  letter-spacing: 0.005em;
+}
+.av-console-page .av-console-freshness.is-stale {
+  color: #edb88b;
+  background: rgba(255, 166, 75, 0.07);
+  border-color: rgba(255, 166, 75, 0.2);
+}
+.av-console-page .av-console-freshness.is-stale svg {
+  color: #eeb27b;
+}
+.av-console-page .av-console-expand > svg:last-child {
+  transition: transform 0.18s ease;
+}
+.av-console-page .av-console-expand > svg.is-open {
+  transform: rotate(90deg);
+}
+.av-console-page .av-console-advanced {
+  min-height: 53px;
+  padding-left: 25px !important;
+  margin-left: 8px;
+  width: calc(100% - 8px);
+  border-left: 1px solid rgba(255, 141, 104, 0.22);
+}
+.av-console-page .av-console-advanced strong {
+  font-size: 11px;
+}
+.av-console-page .av-refresh-spin {
+  animation: av-ref-spin 1.2s linear infinite;
+}
+@keyframes av-ref-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* Hide old raw form containers; replace with coherent content surfaces. */
+.av-console-page .av-control-panel {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+  margin-top: 0 !important;
+  max-width: 100%;
+  min-width: 0;
+}
+.av-console-page .av-panel-feature-header {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 140px;
+  background: radial-gradient(
+      circle at 95% 0%,
+      rgba(242, 111, 75, 0.13),
+      transparent 42%
+    ),
+    linear-gradient(135deg, #17191f, #12151b);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 17px;
+  padding: 26px 30px;
+  margin-bottom: 17px;
+}
+.av-console-page .av-panel-symbol {
+  flex: 0 0 auto;
+  width: 60px;
+  height: 60px;
+  display: grid;
+  place-items: center;
+  border-radius: 15px;
+  background: linear-gradient(
+    145deg,
+    rgba(255, 135, 94, 0.18),
+    rgba(139, 71, 120, 0.12)
+  );
+  color: #ff9776;
+  border: 1px solid rgba(251, 138, 105, 0.18);
+}
+.av-console-page .av-panel-feature-header > div {
+  min-width: 0;
+  flex: 1;
+}
+.av-console-page .av-panel-eyebrow {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: #fa9071;
+  font-weight: 800;
+}
+.av-console-page .av-panel-feature-header h2 {
+  font-size: clamp(24px, 2.5vw, 32px) !important;
+  line-height: 1.2;
+  letter-spacing: -0.04em !important;
+  margin: 6px 0 !important;
+}
+.av-console-page .av-panel-feature-header p {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #9aa4b5;
+  margin: 0;
+}
+.av-console-page .av-panel-env {
+  flex: 0 0 auto;
+  border: 1px solid rgba(242, 140, 101, 0.21);
+  border-radius: 999px;
+  color: #f3ae96;
+  background: rgba(242, 140, 101, 0.07);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: 9px 12px;
+}
+.av-console-page .av-panel-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-bottom: 18px;
+}
+.av-console-page .av-panel-steps span {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #b7bdc8;
+  font-size: 11px;
+  background: #14171e;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  padding: 11px 13px;
+  border-radius: 9px;
+}
+.av-console-page .av-panel-steps b {
+  font-size: 10px;
+  color: #fd9071;
+}
+.av-console-page .av-panel-rpc {
+  color: #8892a4;
+  font-size: 11px !important;
+  margin: 10px 0 19px;
+  overflow-wrap: anywhere;
+}
+.av-console-page .av-panel-rpc code {
+  color: #c6b6b6;
+  overflow-wrap: anywhere;
+}
+.av-console-page .av-policy-columns {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.82fr) minmax(0, 1.18fr);
+  align-items: start;
+  gap: 17px;
+}
+.av-console-page .av-panel-card {
+  min-width: 0;
+  background: linear-gradient(150deg, #171a21, #11151b);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 16px;
+  padding: 26px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.07);
+}
+.av-console-page .av-panel-card-title {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  margin-bottom: 20px;
+  min-width: 0;
+}
+.av-console-page .av-mini-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  color: #fd9170;
+  background: rgba(247, 134, 97, 0.1);
+  border: 1px solid rgba(247, 134, 97, 0.13);
+  flex: 0 0 auto;
+}
+.av-console-page .av-panel-card-title small {
+  display: block;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  font-weight: 800;
+  color: #e58e75;
+  margin-bottom: 5px;
+}
+.av-console-page .av-panel-card-title h3 {
+  font-size: 19px !important;
+  letter-spacing: -0.035em !important;
+  margin: 0 !important;
+  line-height: 1.24;
+}
+.av-console-page .av-panel-card > p {
+  color: #9ea7b6;
+  font-size: 12px !important;
+  line-height: 1.65;
+  margin: 9px 0 22px !important;
+}
+.av-console-page .av-panel-card label[for],
+.av-console-page .av-dev-panel > label[for],
+.av-console-page .av-dev-issue > label[for] {
+  display: block;
+  margin: 16px 0 8px;
+  font-size: 11px;
+  color: #bac1cf;
+  font-weight: 650;
+}
+.av-console-page .av-panel-card .av-field-control {
+  display: block;
+  min-height: 43px;
+  width: 100%;
+  max-width: 100%;
+  background: #0b0e14;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 9px;
+  padding: 10px 12px;
+  color: #f7f4f6;
+  outline: none;
+  transition: border-color 0.18s, box-shadow 0.18s;
+  font-family: inherit;
+  font-size: 12px;
+}
+.av-console-page .av-panel-card .av-field-control:focus-visible {
+  border-color: #fc9977;
+  box-shadow: 0 0 0 3px rgba(250, 137, 96, 0.12);
+}
+.av-console-page .av-control-panel button:not(.av-console-nav-item) {
+  border-radius: 9px;
+  min-height: 41px;
+  max-width: 100%;
+  padding: 10px 15px;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: normal;
+  text-align: center;
+  background: #272c36;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #f5f2f4;
+  transition: background 0.18s, transform 0.18s;
+}
+.av-console-page
+  .av-control-panel
+  button:not(.av-console-nav-item):not(:disabled):hover {
+  background: #353b47;
+  transform: translateY(-1px);
+}
+.av-console-page .av-policy-panel .av-panel-card button {
+  background: #f48767;
+  color: #121114;
+  border-color: #fa946e;
+  margin-top: 24px !important;
+}
+.av-console-page .av-policy-panel .av-panel-card button:not(:disabled):hover {
+  background: #ffa181;
+  color: #121114;
+}
+.av-console-page .av-control-panel button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.av-console-page .av-panel-consent {
+  display: flex;
+  gap: 12px;
+  align-items: start;
+  padding: 17px 18px;
+  border: 1px solid rgba(255, 160, 100, 0.18);
+  background: rgba(234, 140, 77, 0.05);
+  color: #d1b9ad;
+  border-radius: 11px;
+  margin-top: 20px;
+  font-size: 11px;
+  line-height: 1.7;
+  cursor: pointer;
+}
+.av-console-page .av-panel-consent > svg {
+  color: #eca784;
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.av-console-page .av-panel-consent-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  min-width: 0;
+  flex: 1;
+}
+.av-console-page .av-panel-consent-checkbox > input {
+  margin: 2px 0 0;
+  accent-color: #f58967;
+  flex: 0 0 auto;
+}
+.av-console-page .av-control-panel [role="alert"] {
+  color: #ffb4af !important;
+  border: 1px solid rgba(255, 102, 113, 0.22);
+  background: rgba(207, 79, 88, 0.075);
+  border-radius: 9px;
+  padding: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.av-console-page .av-control-panel [role="status"] {
+  color: #a8dec3;
+  background: rgba(58, 174, 113, 0.055);
+  border: 1px solid rgba(58, 174, 113, 0.15);
+  border-radius: 9px;
+  padding: 13px;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+/* Security controls: restrained critical-action styling. */
+.av-console-page .av-panel-feature-security {
+  background: radial-gradient(
+      circle at 95% 0%,
+      rgba(211, 92, 84, 0.13),
+      transparent 42%
+    ),
+    linear-gradient(135deg, #1a171b, #12151b);
+}
+.av-console-page .av-security-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 15px;
+  margin-top: 18px;
+}
+.av-console-page .av-security-action:first-child {
+  grid-column: 1/-1;
+  background: radial-gradient(
+      circle at 85% 50%,
+      rgba(209, 81, 77, 0.09),
+      transparent 40%
+    ),
+    #19171d;
+  border-color: rgba(236, 108, 103, 0.22);
+}
+.av-console-page .av-security-action h3 {
+  margin: 0 !important;
+}
+.av-console-page .av-security-action > div:not(.av-panel-card-title) {
+  padding: 13px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.065);
+  display: grid;
+  gap: 10px;
+}
+.av-console-page .av-security-action code {
+  font-size: 11px;
+  color: #b5bdc9;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+}
+.av-console-page .av-security-action button {
+  width: max-content;
+  max-width: 100%;
+}
+.av-console-page .av-emergency-action button:not(:disabled) {
+  color: #ffb2ad !important;
+  border-color: rgba(230, 98, 98, 0.32) !important;
+  background: rgba(212, 72, 83, 0.12) !important;
+}
+.av-console-page .av-security-panel > p:nth-of-type(1) {
+  padding: 14px 16px;
+  border: 1px solid rgba(252, 168, 104, 0.15);
+  border-radius: 10px;
+  background: rgba(250, 154, 91, 0.045);
+  font-size: 11px;
+  color: #e0b392 !important;
+  line-height: 1.7;
+}
+/* Developer tools: visually separate app identity, permissions and existing credentials. */
+.av-console-page .av-panel-feature-developer {
+  background: radial-gradient(
+      circle at 95% 0%,
+      rgba(144, 108, 205, 0.16),
+      transparent 42%
+    ),
+    linear-gradient(135deg, #171820, #12151b);
+}
+.av-console-page .av-dev-key-story {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.av-console-page .av-dev-key-story > div {
+  display: grid;
+  grid-template-columns: 25px 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 12px;
+  row-gap: 2px;
+  align-items: center;
+  background: #161920;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 13px;
+  padding: 19px;
+}
+.av-console-page .av-dev-key-story svg {
+  grid-row: span 2;
+  color: #f18f70;
+}
+.av-console-page .av-dev-key-story strong {
+  font-size: 12px;
+}
+.av-console-page .av-dev-key-story small {
+  font-size: 11px;
+  color: #929aaa;
+  line-height: 1.5;
+}
+.av-console-page .av-dev-panel {
+  padding-bottom: 30px !important;
+}
+.av-console-page .av-dev-panel > p:not(.av-panel-rpc) {
+  font-size: 11px;
+  line-height: 1.65;
+  color: #aab2be;
+}
+.av-console-page .av-dev-panel > label[for],
+.av-console-page .av-dev-issue > label[for] {
+  margin: 18px 0 8px;
+}
+.av-console-page .av-dev-panel input:not([type="checkbox"]),
+.av-console-page .av-dev-panel select {
+  display: block;
+  max-width: 100%;
+  min-height: 42px;
+  background: #0d1017;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 9px;
+  padding: 10px 12px;
+  color: #f4f2f5;
+  font-size: 12px;
+}
+.av-console-page .av-dev-issue {
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 15px;
+  padding: 24px;
+  margin: 22px 0;
+  background: #151921;
+}
+.av-console-page .av-dev-panel > p:has(button) {
+  margin: 16px 0;
+}
+.av-console-page .av-dev-panel input[type="checkbox"] {
+  accent-color: #fb8d70;
+}
+.av-console-page .av-dev-panel code {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 1100px) {
+  .av-console-page .av-policy-columns {
+    grid-template-columns: 1fr;
+  }
+  .av-console-page .av-security-grid {
+    grid-template-columns: 1fr;
+  }
+  .av-console-page .av-security-action:first-child {
+    grid-column: auto;
+  }
+}
+@media (max-width: 650px) {
+  .av-console-page .av-panel-feature-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 22px;
+  }
+  .av-console-page .av-panel-env {
+    margin-left: 0;
+  }
+  .av-console-page .av-panel-steps {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .av-console-page .av-dev-key-story {
+    grid-template-columns: 1fr;
+  }
+  .av-console-page .av-panel-card {
+    padding: 19px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .av-console-page .av-refresh-spin {
+    animation: none;
+  }
+}
+
+/* Snapshot-preserving additions to the V2 visual language. */
+.av-console-page .av-console-freshness {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 14px;
+  margin: 0 0 13px;
+  border-radius: 10px;
+  color: #a9dfcb;
+  background: rgba(60, 182, 131, 0.055);
+  border: 1px solid rgba(65, 186, 139, 0.16);
+  font-size: 12px;
+  font-weight: 600;
+}
+.av-console-page .av-console-freshness.is-stale {
+  color: #e5ae86;
+  background: rgba(238, 155, 88, 0.06);
+  border-color: rgba(239, 159, 88, 0.2);
+}
+.av-console-page .av-console-expand {
+  width: 100%;
+}
+.av-console-page .av-console-expand svg:last-child {
+  margin-left: auto;
+  transition: transform 0.2s ease;
+}
+.av-console-page .av-console-expand svg:last-child.is-open {
+  transform: rotate(180deg);
+}
+.av-console-page .av-console-advanced {
+  width: calc(100% - 14px);
+  margin-left: 14px;
+  padding-left: 21px;
+  border-left: 1px solid rgba(255, 146, 106, 0.2);
+}
+.av-console-page .av-panel-card > p {
+  color: #a9b0bc;
+  line-height: 1.65;
+}
+.av-console-page .av-panel-card > label[for] {
+  display: block;
+  margin: 18px 0 8px;
+  color: #c4c9d3;
+}
+.av-console-page .av-panel-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+}
+.av-console-page .av-panel-consent > svg {
+  flex: 0 0 auto;
+  color: #f1aa8b;
+  margin-top: 2px;
+}
+.av-console-page .av-panel-consent > input {
+  flex: 0 0 auto;
+  margin: 3px 0 0;
+  accent-color: #f58967;
+}
+.av-console-page .av-panel-consent:not(:has(input)) {
+  cursor: default;
+}
+.av-console-page .av-dev-secret {
+  margin: 22px 0;
+  padding: 20px;
+  border: 1px solid rgba(249, 174, 100, 0.35);
+  border-radius: 13px;
+  background: rgba(252, 161, 86, 0.065);
+}
+.av-console-page .av-dev-secret code {
+  display: block;
+  padding: 12px;
+  border-radius: 8px;
+  background: #0e1016;
+  overflow-wrap: anywhere;
+  user-select: all;
+  font-size: 12px;
+}
+.av-console-page .av-dev-existing {
+  margin-top: 20px;
+  padding-top: 15px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+.av-console-page .av-dev-existing-item {
+  padding: 14px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.075);
+}
+.av-console-page .av-dev-existing-item p {
+  overflow-wrap: anywhere;
+}
+.av-console-page .av-dev-panel .av-field-control {
+  width: 100%;
+  max-width: 540px;
+}
+.av-console-page .av-dev-panel [role="region"] button + button {
+  margin-left: 8px;
+}
+.av-console-page .av-policy-panel .av-panel-consent,
+.av-console-page .av-security-panel .av-panel-consent,
+.av-console-page .av-dev-panel .av-panel-consent {
+  font-size: 12px;
+  color: #d5bdb1;
+  line-height: 1.65;
+}
+.av-console-page .av-policy-panel .av-panel-card button,
+.av-console-page .av-security-panel .av-panel-card button {
+  white-space: normal;
+}
+@media (max-width: 700px) {
+  .av-console-page .av-panel-feature-header {
+    flex-wrap: wrap;
+  }
+  .av-console-page .av-panel-steps {
+    display: flex;
+  }
+  .av-console-page .av-dev-secret {
+    padding: 14px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .av-console-page .av-refresh-spin {
+    animation: none;
+  }
+}

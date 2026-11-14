@@ -1,4 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { ArrowLeft, ArrowRight, LockKeyhole, ShieldCheck, Wallet } from "lucide-react";
+import { BrandLockup } from "./Brand";
 
 /** Browser-wallet signature provider (Phantom-compatible signMessage API). */
 type OwnerWallet = {
@@ -77,27 +79,36 @@ export function OwnerDashboardGate({ children }: { children: ReactNode }) {
     }
   }
 
-  if (status === "checking") return <main style={{ padding: 32 }}>Checking owner session…</main>;
+  if (status === "checking") return (
+    <main className="av-auth-page"><div className="av-auth-panel"><span className="av-auth-spinner"/> Checking owner session…</div></main>
+  );
   if (status === "unauthenticated") {
     return (
-      <main style={{ maxWidth: 580, margin: "15vh auto", padding: 32, fontFamily: "system-ui" }}>
-        <h1>AgentVault Owner Dashboard</h1>
-        <p>Connect your vault-owner wallet to view treasury, agents, approvals and activity.</p>
-        <p>This is a local, read-only development dashboard. Signing in does not approve any payment.</p>
-        {error && <p role="alert" style={{ color: "#b45309" }}>{error}</p>}
-        <button type="button" disabled={busy} onClick={() => void connect()}>
-          {busy ? "Verifying owner…" : "Connect owner wallet"}
-        </button>
-      </main>
+      <div className="av-auth-page">
+        <div className="av-auth-top"><a href="/" className="av-brand-anchor"><BrandLockup /></a><span className="av-env-chip"><span className="av-live-dot"/> DEVNET</span></div>
+        <main className="av-auth-panel">
+          <span className="av-auth-symbol"><LockKeyhole size={26} strokeWidth={1.6}/></span>
+          <span className="av-auth-eyebrow">SECURE OWNER ACCESS</span>
+          <h1>Your treasury.<br/><em>Your control.</em></h1>
+          <p>Sign in with your vault-owner wallet to inspect treasury balances, agent policies, workflow approvals and on-chain activity.</p>
+          <div className="av-auth-info"><ShieldCheck size={18}/><span>Wallet-signed, read-only session. Signing in will not approve or execute a payment.</span></div>
+          {error && <p className="av-auth-error" role="alert">{error}</p>}
+          <button className="av-auth-submit" type="button" disabled={busy} onClick={() => void connect()}>
+            <Wallet size={18}/>{busy ? "Verifying owner…" : "Connect owner wallet"}<ArrowRight size={17}/>
+          </button>
+          <div className="av-auth-links"><a href="/"><ArrowLeft size={15}/> Back to website</a><a href="/onboarding">Manage your vaults <ArrowRight size={15}/></a></div>
+        </main>
+        <span className="av-auth-bottom">AGENTVAULT · LOCAL DEVNET PREVIEW · NOT FOR CUSTOMER FUNDS</span>
+      </div>
     );
   }
   return (
     <>
-      <div style={{ padding: "8px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, fontFamily: "system-ui", fontSize: 12, background: "#14251f", color: "#ffffff" }}>
-        <span>Owner wallet verified · Read-only session</span>
+      <div className="av-verified-ribbon">
+        <span><ShieldCheck size={14}/> Owner wallet verified <i/> Read-only session</span>
         <button type="button" onClick={() => void logout()} disabled={busy}>Sign out</button>
       </div>
-      {error && <p role="alert" style={{ padding: 12 }}>{error}</p>}
+      {error && <p className="av-global-error" role="alert">{error}</p>}
       {children}
     </>
   );

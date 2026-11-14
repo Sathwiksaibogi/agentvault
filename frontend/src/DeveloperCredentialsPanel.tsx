@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { KeyRound, ShieldCheck, PlugZap, LockKeyhole } from "lucide-react";
 import {
   authorizeCredentialAction,
   listCredentials,
@@ -8,18 +9,6 @@ import {
   type CredentialWallet,
   type IssuedCredential,
 } from "./developer-credentials";
-
-const surface = {
-  padding: 22,
-  borderRadius: 12,
-  background: "#172338",
-  marginTop: 24,
-} as const;
-const control = {
-  padding: 9,
-  width: "min(100%, 440px)",
-  boxSizing: "border-box",
-} as const;
 
 type Props = { owner: string; vault: string };
 function walletProvider(): CredentialWallet | null {
@@ -174,8 +163,36 @@ export default function DeveloperCredentialsPanel({ owner, vault }: Props) {
   }
 
   return (
-    <section style={surface} aria-label="Developer credentials">
-      <h2>Developer API credentials</h2>
+    <section
+      className="av-control-panel av-dev-panel av-owner-surface av-developer-panel"
+      aria-label="Developer credentials"
+    >
+      <div className="av-panel-feature-header av-panel-feature-developer">
+        <span className="av-panel-symbol">
+          <PlugZap size={25} />
+        </span>
+        <div>
+          <span className="av-panel-eyebrow">OPTIONAL · INTEGRATIONS</span>
+          <h2>Connect your agent applications</h2>
+          <p>
+            Generate scoped credentials for backend services that submit intents
+            or read activity.
+          </p>
+        </div>
+        <span className="av-panel-env">ADVANCED</span>
+      </div>
+      <div className="av-dev-key-story">
+        <div>
+          <KeyRound size={21} />
+          <strong>Granular access</strong>
+          <small>Limit API permissions and lifespan.</small>
+        </div>
+        <div>
+          <LockKeyhole size={21} />
+          <strong>Owner verified</strong>
+          <small>Approve issuance and revocation with Phantom.</small>
+        </div>
+      </div>
       <p>
         Local Solana Devnet only · Vault{" "}
         <code style={{ overflowWrap: "anywhere" }}>{vault}</code>
@@ -201,7 +218,7 @@ export default function DeveloperCredentialsPanel({ owner, vault }: Props) {
       <div>
         <input
           id="developer-application"
-          style={control}
+          className="av-field-control"
           value={principalId}
           disabled={busy}
           autoComplete="off"
@@ -218,13 +235,21 @@ export default function DeveloperCredentialsPanel({ owner, vault }: Props) {
           List credentials for this application
         </button>
       </p>
-      <div style={{ borderTop: "1px solid #475569", paddingTop: 16 }}>
-        <h3>Issue credential</h3>
+      <div className="av-dev-issue av-panel-card">
+        <div className="av-panel-card-title">
+          <span className="av-mini-icon">
+            <KeyRound size={20} />
+          </span>
+          <div>
+            <small>ISSUE KEY</small>
+            <h3>New credential</h3>
+          </div>
+        </div>
         <label htmlFor="developer-permission">Permission</label>
         <div>
           <select
             id="developer-permission"
-            style={control}
+            className="av-field-control"
             disabled={busy}
             value={scope}
             onChange={(e) => setScope(e.target.value as CredentialScope)}
@@ -241,7 +266,7 @@ export default function DeveloperCredentialsPanel({ owner, vault }: Props) {
         <div>
           <input
             id="developer-expiry"
-            style={control}
+            className="av-field-control"
             type="number"
             min="1"
             max="24"
@@ -253,7 +278,8 @@ export default function DeveloperCredentialsPanel({ owner, vault }: Props) {
         </div>
       </div>
       <p>
-        <label>
+        <label className="av-panel-consent">
+          <ShieldCheck size={17} />
           <input
             type="checkbox"
             checked={ack}
@@ -275,7 +301,9 @@ export default function DeveloperCredentialsPanel({ owner, vault }: Props) {
       </p>
       {issued && (
         <div
-          style={{ padding: 15, border: "1px solid #fbbf24", borderRadius: 8 }}
+          className="av-dev-secret"
+          role="region"
+          aria-label="One-time API credential"
         >
           <h3>One-time credential — copy now</h3>
           <p>
@@ -322,26 +350,13 @@ export default function DeveloperCredentialsPanel({ owner, vault }: Props) {
         </div>
       )}
       {keys !== null && (
-        <div
-          style={{
-            marginTop: 18,
-            borderTop: "1px solid #475569",
-            paddingTop: 12,
-          }}
-        >
+        <div className="av-dev-existing">
           <h3>Credential metadata for {principalId}</h3>
           {keys.length === 0 && (
             <p>No credentials found for this application in this vault.</p>
           )}
           {keys.map((key) => (
-            <div
-              key={key.keyId}
-              style={{
-                borderTop: "1px solid #334155",
-                paddingTop: 10,
-                marginTop: 10,
-              }}
-            >
+            <div key={key.keyId} className="av-dev-existing-item">
               <p>
                 <strong>{status(key)}</strong> · <code>{key.keyId}</code>
               </p>
