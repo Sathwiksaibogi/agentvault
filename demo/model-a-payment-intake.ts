@@ -72,6 +72,7 @@ export type StoredModelAPaymentExecution = {
     | "claimed"
     | "prepared"
     | "confirmed"
+    | "finalized"
     | "failed_on_chain"
     | "rejected"
     | "expired_unresolved";
@@ -404,18 +405,49 @@ export function readModelAPaymentExecution(
   if (existsSync(rejectedPath)) {
     try {
       const parsed = JSON.parse(readFileSync(rejectedPath, "utf8"));
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        typeof parsed.reason !== "string"
+      ) {
+        throw new Error("Invalid rejected record shape");
+      }
       return {
         claimed: false,
         prepared: false,
         status: "rejected",
-        rejectionReason: String(parsed.reason ?? "Rejected"),
+        rejectionReason: parsed.reason,
       };
     } catch {
+      throw new Error(
+        "Stored execution record malformed; manual reconciliation required"
+      );
+    }
+  }
+
+  const finalizedPath = join(journalDir, `${requestId}.finalized.json`);
+  if (existsSync(finalizedPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(finalizedPath, "utf8"));
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        typeof parsed.signature !== "string" ||
+        typeof parsed.nonce !== "string"
+      ) {
+        throw new Error("Invalid finalized record shape");
+      }
       return {
-        claimed: false,
-        prepared: false,
-        status: "rejected",
+        claimed: true,
+        prepared: true,
+        status: "finalized",
+        signature: parsed.signature,
+        nonce: parsed.nonce,
       };
+    } catch {
+      throw new Error(
+        "Stored execution record malformed; manual reconciliation required"
+      );
     }
   }
 
@@ -423,6 +455,14 @@ export function readModelAPaymentExecution(
   if (existsSync(confirmedPath)) {
     try {
       const parsed = JSON.parse(readFileSync(confirmedPath, "utf8"));
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        typeof parsed.signature !== "string" ||
+        typeof parsed.nonce !== "string"
+      ) {
+        throw new Error("Invalid confirmed record shape");
+      }
       return {
         claimed: true,
         prepared: true,
@@ -431,7 +471,9 @@ export function readModelAPaymentExecution(
         nonce: parsed.nonce,
       };
     } catch {
-      return { claimed: true, prepared: true, status: "confirmed" };
+      throw new Error(
+        "Stored execution record malformed; manual reconciliation required"
+      );
     }
   }
 
@@ -439,6 +481,15 @@ export function readModelAPaymentExecution(
   if (existsSync(failedPath)) {
     try {
       const parsed = JSON.parse(readFileSync(failedPath, "utf8"));
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        typeof parsed.signature !== "string" ||
+        typeof parsed.nonce !== "string" ||
+        typeof parsed.reason !== "string"
+      ) {
+        throw new Error("Invalid failed record shape");
+      }
       return {
         claimed: true,
         prepared: true,
@@ -448,7 +499,9 @@ export function readModelAPaymentExecution(
         failureReason: parsed.reason,
       };
     } catch {
-      return { claimed: true, prepared: true, status: "failed_on_chain" };
+      throw new Error(
+        "Stored execution record malformed; manual reconciliation required"
+      );
     }
   }
 
@@ -456,6 +509,14 @@ export function readModelAPaymentExecution(
   if (existsSync(signedPath)) {
     try {
       const parsed = JSON.parse(readFileSync(signedPath, "utf8"));
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        typeof parsed.signatureBase64 !== "string" ||
+        typeof parsed.nonce !== "string"
+      ) {
+        throw new Error("Invalid signed record shape");
+      }
       return {
         claimed: true,
         prepared: true,
@@ -464,7 +525,9 @@ export function readModelAPaymentExecution(
         nonce: parsed.nonce,
       };
     } catch {
-      return { claimed: true, prepared: true, status: "prepared" };
+      throw new Error(
+        "Stored execution record malformed; manual reconciliation required"
+      );
     }
   }
 

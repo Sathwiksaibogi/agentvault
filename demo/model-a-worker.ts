@@ -13,7 +13,7 @@
  * - Prepared signed transactions are durably saved before any broadcast.
  * - Uncertain confirmations fail closed; never automatically recreate transactions.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -22,9 +22,11 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   Connection,
   Keypair,
@@ -44,6 +46,7 @@ import {
 } from "@solana/spl-token";
 import BN from "bn.js";
 import bs58 from "bs58";
+import nacl from "tweetnacl";
 import type { Agentvault } from "../target/types/agentvault";
 import {
   assertPaymentInstructions,
@@ -65,6 +68,7 @@ import {
 import {
   readModelAPaymentIntent,
   readModelAPaymentIntentAcknowledgment,
+  validateModelAPaymentIntent,
   type StoredModelAPaymentIntent,
 } from "./model-a-payment-intake";
 import { AGENT_WORKFLOWS, type AgentId } from "./workflow-policy";
@@ -148,6 +152,108 @@ export interface ModelAWorkerRpc {
   ): Promise<{ value: { err: unknown | null } }>;
 }
 
+export type AuthenticatedAgentPaymentDecision = {
+  decision: "PAY" | "REJECT";
+  requestId: string;
+  vault: string;
+  agentAuthority: string;
+  taskPda: string;
+  recipient: string;
+  amountBaseUnits: string;
+  reason: string;
+  signature?: string;
+};
+
+export type AgentAuthorizationContext = {
+  taskPda: PublicKey;
+  vaultKey: PublicKey;
+  expectedNonce: string;
+};
+
+export function encodeAgentPaymentDecision(d: {
+  requestId: string;
+  vault: string;
+  agentAuthority: string;
+  taskPda: string;
+  recipient: string;
+  amountBaseUnits: string;
+}): Buffer {
+  return Buffer.from(
+    JSON.stringify([
+      "agentvault:agent-payment-decision:v1",
+      d.requestId,
+      d.vault,
+      d.agentAuthority,
+      d.taskPda,
+      d.recipient,
+      d.amountBaseUnits,
+    ]),
+    "utf8"
+  );
+}
+
+export function atomicWriteJsonSync(filePath: string, data: unknown): void {
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const tmpPath = `${filePath}.tmp.${randomBytes(8).toString("hex")}`;
+  const fd = openSync(tmpPath, "w", 0o600);
+  try {
+    writeFileSync(fd, JSON.stringify(data, null, 2) + "\n");
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmpPath, filePath);
+  try {
+    const dirFd = openSync(dir, "r");
+    try {
+      fsyncSync(dirFd);
+    } finally {
+      closeSync(dirFd);
+    }
+  } catch {
+    // Some platforms do not support opening directories for fsync
+  }
+}
+
+/** Cross-process mutual exclusion lock using atomic filesystem locks. */
+export class CrossProcessTaskLock {
+  private lockFd: number | null = null;
+  private lockPath: string | null = null;
+
+  acquire(runtimeDir: string, taskPda: string): boolean {
+    const locksDir = join(runtimeDir, "locks");
+    mkdirSync(locksDir, { recursive: true, mode: 0o700 });
+    const lockPath = join(locksDir, `task-${taskPda}.lock`);
+    try {
+      const fd = openSync(lockPath, "wx", 0o600);
+      writeFileSync(fd, `${process.pid}\n${Date.now()}\n`);
+      fsyncSync(fd);
+      this.lockFd = fd;
+      this.lockPath = lockPath;
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  release(): void {
+    if (this.lockFd !== null && this.lockPath !== null) {
+      try {
+        closeSync(this.lockFd);
+      } catch {}
+      try {
+        unlinkSync(this.lockPath);
+      } catch {}
+      this.lockFd = null;
+      this.lockPath = null;
+    }
+  }
+}
+
 export type ModelAWorkerOptions = {
   runtimeDir: string;
   network: "devnet";
@@ -179,8 +285,13 @@ export type ModelAWorkerOptions = {
     requestId: string;
   }) => { acknowledged: boolean; acknowledgedAtUnix?: number };
   authorizePayment?: (
-    intent: StoredModelAPaymentIntent
-  ) => Promise<{ decision: "PAY" | "REJECT"; reason: string }>;
+    intent: StoredModelAPaymentIntent,
+    context?: AgentAuthorizationContext
+  ) => Promise<
+    | AuthenticatedAgentPaymentDecision
+    | { decision: "REJECT"; reason: string }
+    | { decision: "PAY"; reason: string }
+  >;
   evaluateAi?: (
     intent: StoredModelAPaymentIntent
   ) => Promise<{ decision: "PAY" | "REJECT"; reason: string }>;
@@ -224,8 +335,13 @@ export class ModelAWorker {
     requestId: string;
   }) => { acknowledged: boolean; acknowledgedAtUnix?: number };
   private readonly authorizePayment?: (
-    intent: StoredModelAPaymentIntent
-  ) => Promise<{ decision: "PAY" | "REJECT"; reason: string }>;
+    intent: StoredModelAPaymentIntent,
+    context?: AgentAuthorizationContext
+  ) => Promise<
+    | AuthenticatedAgentPaymentDecision
+    | { decision: "REJECT"; reason: string }
+    | { decision: "PAY"; reason: string }
+  >;
   private readonly evaluateAi?: (
     intent: StoredModelAPaymentIntent
   ) => Promise<{ decision: "PAY" | "REJECT"; reason: string }>;
@@ -383,10 +499,53 @@ export class ModelAWorker {
     // 0. Enforce live execution permission gate before claiming, signing, or preparing
     this.assertLiveExecutionAllowed();
 
-    const requestId = intent.request.requestId;
+    // 1. Validate the entire payment-intent envelope
+    if (
+      !intent ||
+      intent.version !== 1 ||
+      intent.kind !== "model-a-payment-intent" ||
+      intent.status !== "received"
+    ) {
+      throw new Error("Invalid payment intent envelope version or kind");
+    }
+    if (intent.network !== "devnet" || this.network !== "devnet") {
+      throw new Error("Network mismatch; Devnet required");
+    }
+    if (intent.vault !== this.vault) {
+      throw new Error("Intent vault does not match worker vault");
+    }
+    const requestId = intent.request?.requestId;
+    if (!requestId || !REQUEST_ID_RE.test(requestId)) {
+      throw new Error("Invalid payment intent request ID format");
+    }
 
-    // Delivery acknowledgment is required before payment execution can proceed.
-    // Note: delivery acknowledgment alone is NOT payment authorization.
+    const currentTrustedTime = Math.floor(this.now() / 1000);
+    if (BigInt(intent.request.expiresAtUnix) <= BigInt(currentTrustedTime)) {
+      throw new Error("Payment intent has expired against current trusted time");
+    }
+
+    // Validate canonical fields with validateModelAPaymentIntent
+    validateModelAPaymentIntent(intent.request, currentTrustedTime);
+
+    // Consistency with persisted intent on disk
+    const persistedIntent = readModelAPaymentIntent({
+      runtimeDir: this.runtimeDir,
+      trustedScope: {
+        network: "devnet",
+        vault: this.vault,
+        principalId: intent.principalId,
+        nowUnix: currentTrustedTime,
+      },
+      requestId,
+    });
+    if (
+      !persistedIntent ||
+      JSON.stringify(persistedIntent.request) !== JSON.stringify(intent.request)
+    ) {
+      throw new Error("Payment intent does not match persisted intent on disk");
+    }
+
+    // Consistency with delivery acknowledgment
     const ack = this.readAck
       ? this.readAck({ vault: this.vault, requestId })
       : readModelAPaymentIntentAcknowledgment({
@@ -398,6 +557,9 @@ export class ModelAWorker {
       throw new Error(
         `Payment intent ${requestId} has not been acknowledged for delivery by agent inbox`
       );
+    }
+    if (ack.acknowledgedAtUnix && ack.acknowledgedAtUnix > currentTrustedTime) {
+      throw new Error("Delivery acknowledgment timestamp is in the future");
     }
 
     const vaultKey = new PublicKey(this.vault);
@@ -431,6 +593,21 @@ export class ModelAWorker {
         recipient: intent.request.recipient,
         status: "skipped",
         reason: "Task currently locked by an active payment execution",
+      };
+    }
+
+    const crossLock = new CrossProcessTaskLock();
+    if (!crossLock.acquire(this.runtimeDir, taskPda.toBase58())) {
+      this.taskLocks.release(taskLockKey);
+      return {
+        requestId,
+        vault: this.vault,
+        agentAuthority: intent.request.agentAuthority,
+        taskId: intent.request.taskId,
+        amountBaseUnits: intent.request.amountBaseUnits,
+        recipient: intent.request.recipient,
+        status: "skipped",
+        reason: "Task currently locked by another worker process",
       };
     }
 
@@ -506,17 +683,42 @@ export class ModelAWorker {
       const currentNonce = taskAcc.nextNonce as BN;
 
       // 3. Authoritative Agent-Authorization Gate
-      // Note: delivery acknowledgment alone is NOT authorization. An explicit payment-decision callback is mandatory.
-      const authCallback = this.evaluateAi ?? this.authorizePayment;
-      if (!authCallback) {
+      // Keep Gemini advisory; never treat AI output alone as cryptographic authorization.
+      if (this.evaluateAi) {
+        const aiResult = await this.evaluateAi(intent);
+        if (!aiResult || aiResult.decision !== "PAY") {
+          const reason =
+            aiResult?.reason || "Payment intent rejected by AI policy";
+          this.recordRejection(requestId, reason);
+          return {
+            requestId,
+            vault: this.vault,
+            agentAuthority: intent.request.agentAuthority,
+            taskId: intent.request.taskId,
+            amountBaseUnits: intent.request.amountBaseUnits,
+            recipient: intent.request.recipient,
+            status: "rejected",
+            reason,
+          };
+        }
+      }
+
+      if (!this.authorizePayment) {
         throw new Error(
           "Missing required agent payment authorization callback (fail-closed); delivery acknowledgment alone does not authorize payment"
         );
       }
-      const evalResult = await authCallback(intent);
-      if (!evalResult || evalResult.decision !== "PAY") {
+
+      const authResult = await this.authorizePayment(intent, {
+        taskPda,
+        vaultKey,
+        expectedNonce: currentNonce.toString(),
+      });
+
+      if (!authResult || authResult.decision !== "PAY") {
         const reason =
-          evalResult?.reason || "Payment intent rejected by agent authorization policy";
+          (authResult as any)?.reason ||
+          "Payment intent rejected by agent authorization policy";
         this.recordRejection(requestId, reason);
         return {
           requestId,
@@ -528,6 +730,50 @@ export class ModelAWorker {
           status: "rejected",
           reason,
         };
+      }
+
+      // Require a payment decision bound to the exact request, amount, recipient, vault, task and agent.
+      const candidate = authResult as Partial<AuthenticatedAgentPaymentDecision>;
+      if (
+        !candidate.requestId ||
+        candidate.requestId !== requestId ||
+        !candidate.vault ||
+        candidate.vault !== this.vault ||
+        !candidate.agentAuthority ||
+        candidate.agentAuthority !== intent.request.agentAuthority ||
+        !candidate.taskPda ||
+        candidate.taskPda !== taskPda.toBase58() ||
+        !candidate.recipient ||
+        candidate.recipient !== intent.request.recipient ||
+        !candidate.amountBaseUnits ||
+        candidate.amountBaseUnits !== intent.request.amountBaseUnits
+      ) {
+        throw new Error(
+          "Untrusted agent decision: decision is not bound to the exact request, amount, recipient, vault, task and agent"
+        );
+      }
+
+      if (candidate.signature) {
+        const sigBytes = Buffer.from(candidate.signature, "base64");
+        if (sigBytes.length !== 64) {
+          throw new Error("Invalid agent authorization signature format");
+        }
+        const enc = encodeAgentPaymentDecision({
+          requestId: candidate.requestId,
+          vault: candidate.vault,
+          agentAuthority: candidate.agentAuthority,
+          taskPda: candidate.taskPda,
+          recipient: candidate.recipient,
+          amountBaseUnits: candidate.amountBaseUnits,
+        });
+        const valid = nacl.sign.detached.verify(
+          enc,
+          sigBytes,
+          authority.toBytes()
+        );
+        if (!valid) {
+          throw new Error("Invalid cryptographic agent authorization signature");
+        }
       }
 
       // 4. Atomic Journal Claim (exclusive file creation)
@@ -626,6 +872,41 @@ export class ModelAWorker {
       // 7. Transaction Signing & Preparation
       this.assertLiveExecutionAllowed();
 
+      // Revalidation before signing:
+      // Revalidate expiry against current trusted time, persisted intent consistency,
+      // and ensure on-chain task state / nonce hasn't changed.
+      const preSignTime = Math.floor(this.now() / 1000);
+      if (BigInt(intent.request.expiresAtUnix) <= BigInt(preSignTime)) {
+        throw new Error("Payment intent expired prior to transaction signing");
+      }
+      const recheckPersisted = readModelAPaymentIntent({
+        runtimeDir: this.runtimeDir,
+        trustedScope: {
+          network: "devnet",
+          vault: this.vault,
+          principalId: intent.principalId,
+          nowUnix: preSignTime,
+        },
+        requestId,
+      });
+      if (
+        !recheckPersisted ||
+        JSON.stringify(recheckPersisted.request) !== JSON.stringify(intent.request)
+      ) {
+        throw new Error(
+          "Persisted payment intent modified prior to transaction signing"
+        );
+      }
+      const freshTaskAcc = await this.program.account.task.fetch(
+        taskPda,
+        "confirmed"
+      );
+      if (!freshTaskAcc.active || !freshTaskAcc.nextNonce.eq(currentNonce)) {
+        throw new Error(
+          "On-chain task state changed prior to transaction signing"
+        );
+      }
+
       let signedTx: Transaction;
       if (this.agentSigner) {
         transaction.sign(this.agentSigner);
@@ -665,20 +946,48 @@ export class ModelAWorker {
         this.assertLiveExecutionAllowed();
 
         if (this.rpc.sendRawTransaction && this.rpc.confirmTransaction) {
+          const locallyPreparedSig = bs58.encode(prepared.transaction.signature!);
           const txSig = await this.rpc.sendRawTransaction(prepared.raw, {
             skipPreflight: false,
             preflightCommitment: "confirmed",
             maxRetries: 2,
           });
-          const confirmRes = await this.rpc.confirmTransaction(
-            {
+
+          // Verify RPC-returned transaction signature against locally prepared signed bytes
+          if (txSig !== locallyPreparedSig) {
+            throw new Error(
+              `RPC-returned transaction signature ${txSig} does not match locally signed signature ${locallyPreparedSig}`
+            );
+          }
+
+          let confirmRes: any;
+          try {
+            confirmRes = await this.rpc.confirmTransaction(
+              {
+                signature: txSig,
+                blockhash,
+                lastValidBlockHeight,
+              },
+              "confirmed"
+            );
+          } catch (confirmError) {
+            // Confirmation failed or timed out.
+            // Never mark an uncertain transaction as definitively failed!
+            return {
+              requestId,
+              vault: this.vault,
+              agentAuthority: authority.toBase58(),
+              taskId: intent.request.taskId,
+              amountBaseUnits: intent.request.amountBaseUnits,
+              recipient: recipient.toBase58(),
+              status: "prepared",
               signature: txSig,
-              blockhash,
-              lastValidBlockHeight,
-            },
-            "confirmed"
-          );
-          if (confirmRes.value.err !== null) {
+              nonce: currentNonce.toString(),
+              reason: `Transaction broadcast uncertain; confirmation pending or timed out: ${(confirmError as Error).message}`,
+            };
+          }
+
+          if (confirmRes.value && confirmRes.value.err !== null) {
             this.recordFailedOnChain(
               requestId,
               txSig,
@@ -698,6 +1007,22 @@ export class ModelAWorker {
               reason: JSON.stringify(confirmRes.value.err),
             };
           }
+
+          if (confirmRes.context?.slot && confirmRes.value?.confirmationStatus === "finalized") {
+            this.recordFinalized(requestId, txSig, currentNonce.toString());
+            return {
+              requestId,
+              vault: this.vault,
+              agentAuthority: authority.toBase58(),
+              taskId: intent.request.taskId,
+              amountBaseUnits: intent.request.amountBaseUnits,
+              recipient: recipient.toBase58(),
+              status: "confirmed",
+              signature: txSig,
+              nonce: currentNonce.toString(),
+            };
+          }
+
           this.recordConfirmed(requestId, txSig, currentNonce.toString());
           return {
             requestId,
@@ -725,6 +1050,7 @@ export class ModelAWorker {
         nonce: currentNonce.toString(),
       };
     } finally {
+      crossLock.release();
       this.taskLocks.release(taskLockKey);
     }
   }
@@ -877,17 +1203,10 @@ export class ModelAWorker {
       reason: reason.slice(0, 500),
       rejectedAt: new Date(this.now()).toISOString(),
     };
-    let fd: number;
     try {
-      fd = openSync(path, "wx", 0o600);
+      atomicWriteJsonSync(path, record);
     } catch {
-      return; // Already recorded
-    }
-    try {
-      writeFileSync(fd, JSON.stringify(record, null, 2) + "\n");
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
+      // Ignore if already written
     }
   }
 
@@ -897,7 +1216,6 @@ export class ModelAWorker {
     nonce: string
   ): void {
     const journalDir = join(this.runtimeDir, "journal");
-    mkdirSync(journalDir, { recursive: true, mode: 0o700 });
     const path = join(journalDir, `${requestId}.confirmed.json`);
     const record = {
       version: 1,
@@ -907,13 +1225,25 @@ export class ModelAWorker {
       nonce,
       confirmedAt: new Date(this.now()).toISOString(),
     };
-    const fd = openSync(path, "w", 0o600);
-    try {
-      writeFileSync(fd, JSON.stringify(record, null, 2) + "\n");
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
+    atomicWriteJsonSync(path, record);
+  }
+
+  private recordFinalized(
+    requestId: string,
+    signature: string,
+    nonce: string
+  ): void {
+    const journalDir = join(this.runtimeDir, "journal");
+    const path = join(journalDir, `${requestId}.finalized.json`);
+    const record = {
+      version: 1,
+      requestId,
+      status: "finalized",
+      signature,
+      nonce,
+      finalizedAt: new Date(this.now()).toISOString(),
+    };
+    atomicWriteJsonSync(path, record);
   }
 
   private recordFailedOnChain(
@@ -923,7 +1253,6 @@ export class ModelAWorker {
     err: unknown
   ): void {
     const journalDir = join(this.runtimeDir, "journal");
-    mkdirSync(journalDir, { recursive: true, mode: 0o700 });
     const path = join(journalDir, `${requestId}.failed.json`);
     const record = {
       version: 1,
@@ -934,13 +1263,7 @@ export class ModelAWorker {
       reason: JSON.stringify(err),
       failedAt: new Date(this.now()).toISOString(),
     };
-    const fd = openSync(path, "w", 0o600);
-    try {
-      writeFileSync(fd, JSON.stringify(record, null, 2) + "\n");
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
+    atomicWriteJsonSync(path, record);
   }
 
   private resolveAgentId(authority: PublicKey): AgentId {

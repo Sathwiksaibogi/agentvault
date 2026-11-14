@@ -28,6 +28,8 @@ import BN from "bn.js";
 import bs58 from "bs58";
 import {
   ModelAWorker,
+  encodeAgentPaymentDecision,
+  CrossProcessTaskLock,
   type ModelAWorkerOptions,
   type ModelAExecutionAdapter,
 } from "./model-a-worker";
@@ -35,10 +37,12 @@ import {
   receiveModelAPaymentIntent,
   acknowledgeModelAPaymentIntent,
   readModelAPaymentIntent,
+  readModelAPaymentExecution,
   PaymentIntentConflict,
   type StoredModelAPaymentIntent,
   type TrustedPaymentIntakeScope,
 } from "./model-a-payment-intake";
+import nacl from "tweetnacl";
 import { AGENTVAULT_PROGRAM_ID } from "./payment-transaction-guard";
 import { loadPreparedPayment } from "./prepared-payment";
 
@@ -298,8 +302,14 @@ function makeWorkerHarness() {
       agentSigner: agentAuthority,
       rpc,
       program,
-      authorizePayment: async () => ({
+      authorizePayment: async (intent, ctx) => ({
         decision: "PAY",
+        requestId: intent.request.requestId,
+        vault: vaultKey.toBase58(),
+        agentAuthority: intent.request.agentAuthority,
+        taskPda: ctx?.taskPda.toBase58() ?? taskPda.toBase58(),
+        recipient: intent.request.recipient,
+        amountBaseUnits: intent.request.amountBaseUnits,
         reason: "Test authorized",
       }),
       now: () => NOW * 1000,
@@ -323,6 +333,7 @@ function makeWorkerHarness() {
     taskPda,
     state,
     trustedScope,
+    program,
     createIntent,
     createWorker,
     cleanup,
@@ -398,10 +409,27 @@ test("concurrent workers: two workers race to claim the same request; exactly on
       worker2.processPaymentIntent(intent),
     ]);
 
-    const successes = [res1, res2].filter((r) => r.status === "fulfilled");
-    assert.equal(successes.length, 1, "Expected exactly one worker to succeed");
-    const result = (successes[0] as PromiseFulfilledResult<any>).value;
-    assert.equal(result.status, "prepared");
+    const preparedList = [res1, res2].filter(
+      (r) =>
+        r.status === "fulfilled" &&
+        (r as PromiseFulfilledResult<any>).value.status === "prepared"
+    );
+    const lockedOrSkipped = [res1, res2].filter(
+      (r) =>
+        r.status === "rejected" ||
+        (r.status === "fulfilled" &&
+          (r as PromiseFulfilledResult<any>).value.status === "skipped")
+    );
+    assert.equal(
+      preparedList.length,
+      1,
+      "Expected exactly one worker to prepare the payment"
+    );
+    assert.equal(
+      lockedOrSkipped.length,
+      1,
+      "Expected the competing worker to be locked out / skipped"
+    );
 
     const claimPath = join(h.runtimeDir, "journal", "req_concurrent_01.json");
     const signedPath = join(
@@ -910,7 +938,7 @@ test("durable execution state: confirmed and failed on-chain payments are record
         simulateTransaction: async () => ({ value: { err: null } }),
         sendRawTransaction: async (raw: Buffer) => {
           sentRaw = raw;
-          return "5ConfirmedSig111111111111111111111111111111111111111111111111111111111111111111111111111111";
+          return bs58.encode(Transaction.from(raw).signature!);
         },
         confirmTransaction: async () => ({ value: { err: null } }),
       } as any,
@@ -929,11 +957,12 @@ test("durable execution state: confirmed and failed on-chain payments are record
     assert.equal(readSuccess?.execution?.status, "confirmed");
     assert.equal(
       readSuccess?.execution?.signature,
-      "5ConfirmedSig111111111111111111111111111111111111111111111111111111111111111111111111111111"
+      bs58.encode(Transaction.from(sentRaw).signature!)
     );
 
     // 2. Test failed on-chain payment recording
     const intentFail = h.createIntent("req_durable_fail_01").record;
+    let sentFailRaw: Buffer | null = null;
     const workerFail = h.createWorker({
       adapter: { mode: "live_devnet" },
       rpc: {
@@ -950,7 +979,10 @@ test("durable execution state: confirmed and failed on-chain payments are record
           owner: SYSVAR_CLOCK_PUBKEY,
         }),
         simulateTransaction: async () => ({ value: { err: null } }),
-        sendRawTransaction: async () => "5FailedSig1111111111111111111111111111111111111111111111111111111111111111111111111111111",
+        sendRawTransaction: async (raw: Buffer) => {
+          sentFailRaw = raw;
+          return bs58.encode(Transaction.from(raw).signature!);
+        },
         confirmTransaction: async () => ({
           value: { err: { InstructionError: [1, "Custom 6001"] } },
         }),
@@ -970,6 +1002,292 @@ test("durable execution state: confirmed and failed on-chain payments are record
     assert.ok(readFail?.execution?.failureReason?.includes("Custom 6001"));
   } finally {
     delete process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST;
+    h.cleanup();
+  }
+});
+
+test("model a request integrity: expired intent against current trusted time fails closed", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const intent = h.createIntent("req_integrity_expired_01", {
+      expiresAtUnix: String(NOW + 5),
+    }).record;
+    const worker = h.createWorker({
+      now: () => (NOW + 10) * 1000,
+    });
+
+    await assert.rejects(
+      async () => worker.processPaymentIntent(intent),
+      /Payment intent has expired against current trusted time/
+    );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("model a request integrity: persisted intent tampering fails closed", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const intent = h.createIntent("req_integrity_tamper_01").record;
+    const worker = h.createWorker();
+
+    // Tamper with the in-memory intent object to alter the payment recipient
+    const tamperedIntent: StoredModelAPaymentIntent = {
+      ...intent,
+      request: {
+        ...intent.request,
+        recipient: Keypair.generate().publicKey.toBase58(),
+      },
+    };
+
+    await assert.rejects(
+      async () => worker.processPaymentIntent(tamperedIntent),
+      /Payment intent does not match persisted intent on disk/
+    );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("model a request integrity: revalidation before signing fails closed if task state changed", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const intent = h.createIntent("req_integrity_reval_01").record;
+    let fetchCount = 0;
+    const worker = h.createWorker({
+      program: {
+        ...h.program,
+        account: {
+          ...h.program.account,
+          task: {
+            fetch: async (address: PublicKey, commitment?: string) => {
+              fetchCount++;
+              if (fetchCount > 1) {
+                // Task was modified or revoked on-chain between step 2 and signing!
+                return {
+                  ...h.state.task,
+                  active: false,
+                };
+              }
+              return h.state.task;
+            },
+          },
+        },
+      },
+    });
+
+    await assert.rejects(
+      async () => worker.processPaymentIntent(intent),
+      /On-chain task state changed prior to transaction signing/
+    );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("agent authorization: bare PAY callback without bound terms fails closed as untrusted", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const intent = h.createIntent("req_auth_bare_01").record;
+    const worker = h.createWorker({
+      // Bare callback returning PAY without binding to request terms
+      authorizePayment: async () =>
+        ({
+          decision: "PAY",
+          reason: "Bare authorization without request binding",
+        } as any),
+    });
+
+    await assert.rejects(
+      async () => worker.processPaymentIntent(intent),
+      /Untrusted agent decision: decision is not bound to the exact request, amount, recipient, vault, task and agent/
+    );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("agent authorization: cryptographic signature on bound decision verifies authority", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const intent = h.createIntent("req_auth_crypto_01").record;
+    const worker = h.createWorker({
+      authorizePayment: async (it, ctx) => {
+        const enc = encodeAgentPaymentDecision({
+          requestId: it.request.requestId,
+          vault: h.vaultKey.toBase58(),
+          agentAuthority: it.request.agentAuthority,
+          taskPda: ctx?.taskPda.toBase58() ?? h.taskPda.toBase58(),
+          recipient: it.request.recipient,
+          amountBaseUnits: it.request.amountBaseUnits,
+        });
+        const sigBytes = nacl.sign.detached(enc, h.agentAuthority.secretKey);
+        return {
+          decision: "PAY",
+          requestId: it.request.requestId,
+          vault: h.vaultKey.toBase58(),
+          agentAuthority: it.request.agentAuthority,
+          taskPda: ctx?.taskPda.toBase58() ?? h.taskPda.toBase58(),
+          recipient: it.request.recipient,
+          amountBaseUnits: it.request.amountBaseUnits,
+          reason: "Cryptographically verified agent authorization",
+          signature: Buffer.from(sigBytes).toString("base64"),
+        };
+      },
+    });
+
+    const res = await worker.processPaymentIntent(intent);
+    assert.equal(res.status, "prepared");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("agent authorization: forged signature fails closed", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const intent = h.createIntent("req_auth_forged_01").record;
+    const rogueKeypair = Keypair.generate();
+    const worker = h.createWorker({
+      authorizePayment: async (it, ctx) => {
+        const enc = encodeAgentPaymentDecision({
+          requestId: it.request.requestId,
+          vault: h.vaultKey.toBase58(),
+          agentAuthority: it.request.agentAuthority,
+          taskPda: ctx?.taskPda.toBase58() ?? h.taskPda.toBase58(),
+          recipient: it.request.recipient,
+          amountBaseUnits: it.request.amountBaseUnits,
+        });
+        // Signed with wrong/rogue keypair!
+        const forgedSigBytes = nacl.sign.detached(enc, rogueKeypair.secretKey);
+        return {
+          decision: "PAY",
+          requestId: it.request.requestId,
+          vault: h.vaultKey.toBase58(),
+          agentAuthority: it.request.agentAuthority,
+          taskPda: ctx?.taskPda.toBase58() ?? h.taskPda.toBase58(),
+          recipient: it.request.recipient,
+          amountBaseUnits: it.request.amountBaseUnits,
+          reason: "Forged agent authorization",
+          signature: Buffer.from(forgedSigBytes).toString("base64"),
+        };
+      },
+    });
+
+    await assert.rejects(
+      async () => worker.processPaymentIntent(intent),
+      /Invalid cryptographic agent authorization signature/
+    );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("agent authorization: Gemini PAY does not bypass agent authorization checks", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const intent = h.createIntent("req_gemini_advisory_01").record;
+    const worker = h.createWorker({
+      evaluateAi: async () => ({
+        decision: "PAY",
+        reason: "Gemini advisory says PAY",
+      }),
+      // But agent authorization returns REJECT:
+      authorizePayment: async () => ({
+        decision: "REJECT",
+        reason: "Agent authority rejects payment",
+      }),
+    });
+
+    const res = await worker.processPaymentIntent(intent);
+    assert.equal(res.status, "rejected");
+    assert.equal(res.reason, "Agent authority rejects payment");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("transaction finality: RPC returning mismatched signature fails closed before broadcast confirmation", async () => {
+  const h = makeWorkerHarness();
+  try {
+    process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST = "true";
+    const intent = h.createIntent("req_mismatched_rpc_sig_01").record;
+    const rogueSignature = bs58.encode(Keypair.generate().publicKey.toBytes());
+
+    const worker = h.createWorker({
+      adapter: { mode: "live_devnet" },
+      rpc: {
+        getGenesisHash: async () => GENESIS,
+        getLatestBlockhash: async () => ({
+          blockhash: VALID_BLOCKHASH,
+          lastValidBlockHeight: 100,
+        }),
+        getBlockHeight: async () => 50,
+        getAccountInfo: async () => ({
+          data: clockBuffer(NOW),
+          executable: false,
+          lamports: 1,
+          owner: SYSVAR_CLOCK_PUBKEY,
+        }),
+        simulateTransaction: async () => ({ value: { err: null } }),
+        sendRawTransaction: async () => rogueSignature, // Returning mismatched signature!
+        confirmTransaction: async () => ({ value: { err: null } }),
+      } as any,
+    });
+
+    await assert.rejects(
+      async () => worker.processPaymentIntent(intent),
+      /RPC-returned transaction signature .* does not match locally signed signature/
+    );
+  } finally {
+    delete process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST;
+    h.cleanup();
+  }
+});
+
+test("transaction finality: malformed terminal execution record fails closed", () => {
+  const h = makeWorkerHarness();
+  try {
+    const journalDir = join(h.runtimeDir, "journal");
+    mkdirSync(journalDir, { recursive: true });
+
+    // Write a corrupt / malformed confirmed record
+    writeFileSync(
+      join(journalDir, "req_malformed_01.confirmed.json"),
+      JSON.stringify({ status: "confirmed", missingFields: true })
+    );
+
+    assert.throws(
+      () => readModelAPaymentExecution(h.runtimeDir, "req_malformed_01"),
+      /Stored execution record malformed; manual reconciliation required/
+    );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("concurrency: cross-process task lock prevents concurrent workers from nonce racing on the same task", () => {
+  const h = makeWorkerHarness();
+  try {
+    const lock1 = new CrossProcessTaskLock();
+    const lock2 = new CrossProcessTaskLock();
+
+    const acquired1 = lock1.acquire(h.runtimeDir, h.taskPda.toBase58());
+    assert.equal(acquired1, true, "First process must acquire task lock");
+
+    const acquired2 = lock2.acquire(h.runtimeDir, h.taskPda.toBase58());
+    assert.equal(acquired2, false, "Second process must be locked out");
+
+    lock1.release();
+
+    const acquired3 = lock2.acquire(h.runtimeDir, h.taskPda.toBase58());
+    assert.equal(
+      acquired3,
+      true,
+      "Second process acquires lock after first releases"
+    );
+    lock2.release();
+  } finally {
     h.cleanup();
   }
 });

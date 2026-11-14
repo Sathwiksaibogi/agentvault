@@ -110,6 +110,7 @@ export interface StoredModelAPaymentExecution {
     | "claimed"
     | "prepared"
     | "confirmed"
+    | "finalized"
     | "failed_on_chain"
     | "rejected"
     | "expired_unresolved";
