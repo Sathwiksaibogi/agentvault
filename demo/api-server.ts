@@ -468,6 +468,7 @@ async function main(): Promise<void> {
       network: NETWORK,
       expectedGenesisHash: state.genesisHash,
       frontendOrigin: "http://127.0.0.1:5173",
+      runtimeDir: RUNTIME_DIR,
       developerKeyRepository: database.repository,
       readScopedAgents: async (verified) => {
         // Anchor .all() returns only program-owned, discriminator-decoded

@@ -10,6 +10,17 @@
  * distributed rate limiter). Never expose it to the public internet.
  */
 import { createHash, randomBytes } from "node:crypto";
+import {
+  existsSync,
+  fsyncSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
 import type {
   IncomingMessage,
   RequestListener,
@@ -25,6 +36,11 @@ import {
   type VerifiedOwnerVault,
 } from "./owner-vault-verifier";
 import type { SelectedVaultAgentsResponse } from "./selected-vault-agent-reader";
+import {
+  paymentApprovalV2Schema,
+  verifyPaymentApprovalV2,
+  type PaymentApprovalV2,
+} from "./payment-approval-v2";
 
 const COOKIE_NAME = "av_selected_vault_session";
 const MAX_CHALLENGES = 128;
@@ -68,12 +84,32 @@ export interface SelectedVaultActivityResponse {
   }>;
 }
 
+export interface SelectedVaultApprovalsResponse {
+  network: "devnet";
+  vault: string;
+  approvals: Array<{
+    requestId: string;
+    authorizationModel: "model-b";
+    status:
+      | "approved_pending_execution"
+      | "executed"
+      | "pending_owner_approval";
+    agentAuthority: string;
+    recipient: string;
+    amountBaseUnits: string;
+    nonce: string;
+    expiresAtUnix: string;
+    createdAtUnix?: number;
+  }>;
+}
+
 export interface SelectedVaultSessionOptions {
   fallbackHandler: RequestListener;
   rpc: SelectedVaultRpc;
   network: "localnet" | "devnet";
   expectedGenesisHash: string;
   frontendOrigin: string;
+  runtimeDir?: string;
   developerKeyRepository?: Pick<
     DeveloperApiKeyRepository,
     "create" | "listByPrincipal" | "revokeForVault"
@@ -84,6 +120,17 @@ export interface SelectedVaultSessionOptions {
   readScopedActivity?: (
     verified: VerifiedOwnerVault
   ) => Promise<SelectedVaultActivityResponse>;
+  readScopedApprovals?: (
+    verified: VerifiedOwnerVault
+  ) => Promise<SelectedVaultApprovalsResponse>;
+  saveScopedApproval?: (
+    verified: VerifiedOwnerVault,
+    approvalData: {
+      paymentApproval: PaymentApprovalV2;
+      signatureBase64: string;
+      signedWorkflow?: unknown;
+    }
+  ) => Promise<{ requestId: string }>;
   now?: () => number;
 }
 
@@ -166,9 +213,12 @@ export function createSelectedVaultSessionHandler(
     network,
     expectedGenesisHash,
     frontendOrigin,
+    runtimeDir,
     developerKeyRepository,
     readScopedAgents,
     readScopedActivity,
+    readScopedApprovals,
+    saveScopedApproval,
     now = Date.now,
   } = options;
   if (frontendOrigin !== "http://127.0.0.1:5173") {
@@ -425,6 +475,107 @@ export function createSelectedVaultSessionHandler(
       return;
     }
 
+    if (path === "/owner-vault/api/approvals" && req.method === "POST") {
+      const session = currentSession(req);
+      if (!session) {
+        return void sendJson(res, 401, { error: "Owner session required" });
+      }
+      void (async () => {
+        let body: Record<string, unknown>;
+        try {
+          body = await jsonBody(req);
+        } catch {
+          return void sendJson(res, 400, { error: "Invalid JSON body" });
+        }
+        try {
+          await requireDevnet();
+          const verified = await verifyOwnerVaultOnChain({
+            rpc,
+            ownerAddress: session.owner,
+            vaultAddress: session.vault,
+          });
+
+          const paymentInput = body.paymentApproval;
+          const signatureBase64 = String(body.signatureBase64 ?? "");
+          if (!paymentInput || !signatureBase64) {
+            return void sendJson(res, 400, {
+              error: "Missing paymentApproval or signature",
+            });
+          }
+
+          const paymentApproval = paymentApprovalV2Schema.parse(paymentInput);
+          if (
+            paymentApproval.owner !== session.owner ||
+            paymentApproval.vault !== session.vault
+          ) {
+            return void sendJson(res, 403, {
+              error: "Approval does not match session owner or vault",
+            });
+          }
+
+          const valid = verifyPaymentApprovalV2(
+            paymentApproval,
+            signatureBase64,
+            new PublicKey(session.owner)
+          );
+          if (!valid) {
+            return void sendJson(res, 400, {
+              error: "Invalid owner signature for PaymentApprovalV2",
+            });
+          }
+
+          if (saveScopedApproval) {
+            await saveScopedApproval(verified, {
+              paymentApproval,
+              signatureBase64,
+              signedWorkflow: body.signedWorkflow,
+            });
+          } else if (runtimeDir) {
+            const approvalsDir = join(runtimeDir, "approvals");
+            mkdirSync(approvalsDir, { recursive: true, mode: 0o700 });
+            const paymentPath = join(
+              approvalsDir,
+              `${paymentApproval.requestId}.payment.json`
+            );
+            const payload = {
+              version: 2,
+              authorizationModel: "model-b",
+              paymentApproval,
+              signatureBase64,
+            };
+            const fd = openSync(paymentPath, "wx", 0o600);
+            try {
+              writeFileSync(fd, JSON.stringify(payload, null, 2) + "\n");
+              fsyncSync(fd);
+            } finally {
+              closeSync(fd);
+            }
+          }
+
+          sendJson(res, 200, {
+            ok: true,
+            requestId: paymentApproval.requestId,
+            status: "approved_pending_execution",
+            notice:
+              "PaymentApprovalV2 verified and stored. Live execution coordinator remains disabled.",
+          });
+        } catch (error) {
+          const msg =
+            error instanceof Error ? error.message : "Approval failed";
+          if (
+            msg.includes("already exists") ||
+            (error as NodeJS.ErrnoException).code === "EEXIST"
+          ) {
+            return void sendJson(res, 409, {
+              error: "Approval already exists for this request ID",
+            });
+          }
+          sendJson(res, 400, { error: msg });
+        }
+      })();
+      return;
+    }
+
     if (path.startsWith("/owner-vault/api/")) {
       if (req.method !== "GET")
         return void sendJson(res, 405, { error: "Read-only endpoint" });
@@ -432,7 +583,8 @@ export function createSelectedVaultSessionHandler(
         url.search ||
         (path !== "/owner-vault/api/treasury" &&
           path !== "/owner-vault/api/agents" &&
-          path !== "/owner-vault/api/activity")
+          path !== "/owner-vault/api/activity" &&
+          path !== "/owner-vault/api/approvals")
       ) {
         return void sendJson(res, 404, { error: "Endpoint not found" });
       }
@@ -447,6 +599,50 @@ export function createSelectedVaultSessionHandler(
             ownerAddress: session.owner,
             vaultAddress: session.vault,
           });
+          if (path === "/owner-vault/api/approvals") {
+            if (readScopedApprovals) {
+              const data = await readScopedApprovals(verified);
+              sendJson(res, 200, data);
+              return;
+            }
+            const approvals: SelectedVaultApprovalsResponse["approvals"] = [];
+            if (runtimeDir) {
+              const approvalsDir = join(runtimeDir, "approvals");
+              if (existsSync(approvalsDir)) {
+                for (const file of readdirSync(approvalsDir)) {
+                  if (!file.endsWith(".payment.json")) continue;
+                  try {
+                    const raw = JSON.parse(
+                      readFileSync(join(approvalsDir, file), "utf8")
+                    );
+                    if (
+                      raw.paymentApproval &&
+                      raw.paymentApproval.vault === verified.vault
+                    ) {
+                      approvals.push({
+                        requestId: raw.paymentApproval.requestId,
+                        authorizationModel: "model-b",
+                        status: "approved_pending_execution",
+                        agentAuthority: raw.paymentApproval.agentAuthority,
+                        recipient: raw.paymentApproval.recipient,
+                        amountBaseUnits: raw.paymentApproval.amountBaseUnits,
+                        nonce: raw.paymentApproval.nonce,
+                        expiresAtUnix: raw.paymentApproval.expiresAtUnix,
+                      });
+                    }
+                  } catch {
+                    /* skip corrupt */
+                  }
+                }
+              }
+            }
+            sendJson(res, 200, {
+              network: "devnet",
+              vault: verified.vault,
+              approvals,
+            });
+            return;
+          }
           if (path === "/owner-vault/api/activity") {
             if (!readScopedActivity)
               throw new Error("Scoped activity reader unavailable");

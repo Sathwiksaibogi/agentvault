@@ -9,9 +9,13 @@ import {
   createSelectedVaultSessionHandler,
   type SelectedVaultRpc,
 } from "./selected-vault-dashboard-session";
+import {
+  encodePaymentApprovalV2,
+  type PaymentApprovalV2,
+} from "./payment-approval-v2";
 
 const FRONTEND = "http://127.0.0.1:5173";
-const GENESIS = "test-devnet-genesis";
+const GENESIS = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const PROGRAM = new PublicKey("BVhTPuAK9birmLeYBeAuBMusEdYW9oFjQeJeMU9hNX9d");
 const TOKEN_PROGRAM = new PublicKey(
   "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
@@ -117,6 +121,7 @@ async function withServer(
       return lookup.get(address.toBase58()) ?? null;
     },
   };
+  const approvalsStore: any[] = [];
   const handler = createSelectedVaultSessionHandler({
     rpc,
     network,
@@ -133,6 +138,25 @@ async function withServer(
       vault: verified.vault,
       activity: [],
     }),
+    readScopedApprovals: async (verified) => ({
+      network: "devnet",
+      vault: verified.vault,
+      approvals: approvalsStore.filter((a) => a.vault === verified.vault),
+    }),
+    saveScopedApproval: async (verified, approvalData) => {
+      approvalsStore.push({
+        vault: verified.vault,
+        requestId: approvalData.paymentApproval.requestId,
+        authorizationModel: "model-b",
+        status: "approved_pending_execution",
+        agentAuthority: approvalData.paymentApproval.agentAuthority,
+        recipient: approvalData.paymentApproval.recipient,
+        amountBaseUnits: approvalData.paymentApproval.amountBaseUnits,
+        nonce: approvalData.paymentApproval.nonce,
+        expiresAtUnix: approvalData.paymentApproval.expiresAtUnix,
+      });
+      return { requestId: approvalData.paymentApproval.requestId };
+    },
     now: () => timestamp,
     fallbackHandler: (_req, res) => {
       fallbackCount++;
@@ -228,7 +252,7 @@ test("signed owner A sees only on-chain verified treasury A", async () => {
     const ch = await getChallenge(ctx, ctx.a);
     assert.match(ch.value.message, /not a payment approval/);
     assert.match(ch.value.message, new RegExp(ctx.a.vault));
-    assert.match(ch.value.message, /Genesis: test-devnet-genesis/);
+    assert.match(ch.value.message, new RegExp(`Genesis: ${GENESIS}`));
     const loginResult = await login(ctx, signed(ch.value, ctx.a));
     assert.equal(loginResult.status, 200);
     const cookie = extractCookie(loginResult);
@@ -425,5 +449,124 @@ test("signed owner can read vault-scoped activity", async () => {
     assert.equal(body.network, "devnet");
     assert.equal(body.vault, ctx.a.vault);
     assert.deepEqual(body.activity, []);
+  });
+});
+
+test("signed owner can read and submit Model B payment approvals (PaymentApprovalV2)", async () => {
+  await withServer(async (ctx) => {
+    const cookie = await loginOwner(ctx, ctx.a);
+
+    // Initial read
+    const res0 = await read(ctx, "/owner-vault/api/approvals", cookie);
+    assert.equal(res0.status, 200);
+    const body0 = (await res0.json()) as { approvals: unknown[] };
+    assert.deepEqual(body0.approvals, []);
+
+    // Construct valid PaymentApprovalV2
+    const paymentApproval: PaymentApprovalV2 = {
+      version: 2,
+      genesisHash: GENESIS,
+      programId: PROGRAM.toBase58(),
+      vault: ctx.a.vault,
+      owner: ctx.a.owner,
+      mint: ctx.a.mint,
+      agent: ctx.a.vault, // valid canonical pubkey
+      agentAuthority: ctx.a.owner,
+      task: ctx.a.vault,
+      recipient: ctx.a.owner,
+      amountBaseUnits: "5000",
+      nonce: "0",
+      expiresAtUnix: "1800000000",
+      requestId: "model_b_req_test_01",
+    };
+
+    const encoded = encodePaymentApprovalV2(paymentApproval);
+    const sigBytes = nacl.sign.detached(encoded, ctx.a.signer.secretKey);
+    const signatureBase64 = Buffer.from(sigBytes).toString("base64");
+
+    // Submit approval
+    const submitRes = await fetch(`${ctx.base}/owner-vault/api/approvals`, {
+      method: "POST",
+      headers: {
+        Origin: FRONTEND,
+        Cookie: cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        paymentApproval,
+        signatureBase64,
+      }),
+    });
+    assert.equal(submitRes.status, 200);
+    const submitJson = (await submitRes.json()) as { ok: boolean; status: string };
+    assert.equal(submitJson.ok, true);
+    assert.equal(submitJson.status, "approved_pending_execution");
+
+    // Re-read approvals
+    const res1 = await read(ctx, "/owner-vault/api/approvals", cookie);
+    assert.equal(res1.status, 200);
+    const body1 = (await res1.json()) as { approvals: Array<{ requestId: string; status: string }> };
+    assert.equal(body1.approvals.length, 1);
+    assert.equal(body1.approvals[0].requestId, "model_b_req_test_01");
+    assert.equal(body1.approvals[0].status, "approved_pending_execution");
+  });
+});
+
+test("submitting PaymentApprovalV2 with mismatched owner or forged signature is rejected", async () => {
+  await withServer(async (ctx) => {
+    const cookie = await loginOwner(ctx, ctx.a);
+
+    const paymentApproval: PaymentApprovalV2 = {
+      version: 2,
+      genesisHash: GENESIS,
+      programId: PROGRAM.toBase58(),
+      vault: ctx.a.vault,
+      owner: ctx.a.owner,
+      mint: ctx.a.mint,
+      agent: ctx.a.vault,
+      agentAuthority: ctx.a.owner,
+      task: ctx.a.vault,
+      recipient: ctx.a.owner,
+      amountBaseUnits: "5000",
+      nonce: "0",
+      expiresAtUnix: "1800000000",
+      requestId: "model_b_req_forged_01",
+    };
+
+    // Sign with WRONG owner (ctx.b)
+    const encoded = encodePaymentApprovalV2(paymentApproval);
+    const forgedSig = Buffer.from(
+      nacl.sign.detached(encoded, ctx.b.signer.secretKey)
+    ).toString("base64");
+
+    const submitRes = await fetch(`${ctx.base}/owner-vault/api/approvals`, {
+      method: "POST",
+      headers: {
+        Origin: FRONTEND,
+        Cookie: cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        paymentApproval,
+        signatureBase64: forgedSig,
+      }),
+    });
+    assert.equal(submitRes.status, 400);
+
+    // Mismatched vault in approval
+    const wrongVaultApproval = { ...paymentApproval, vault: ctx.b.vault };
+    const wrongVaultRes = await fetch(`${ctx.base}/owner-vault/api/approvals`, {
+      method: "POST",
+      headers: {
+        Origin: FRONTEND,
+        Cookie: cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        paymentApproval: wrongVaultApproval,
+        signatureBase64: forgedSig,
+      }),
+    });
+    assert.equal(wrongVaultRes.status, 403);
   });
 });
