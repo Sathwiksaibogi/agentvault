@@ -89,9 +89,7 @@ export default function SelectedVaultPaymentApprovalPanel({
   const [category, setCategory] = useState<"procurement" | "operations">(
     "procurement"
   );
-  const [description, setDescription] = useState(
-    "Devnet procurement verification for AgentVault"
-  );
+  const [description, setDescription] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -346,7 +344,8 @@ export default function SelectedVaultPaymentApprovalPanel({
         />
         <span>
           I understand this signature authorizes the selected payment; it is not
-          merely a wallet login. The separate CLI will only preview it for now.
+          merely a wallet login. A separate CLI can execute the Devnet payment
+          only after additional checks and explicit confirmation.
         </span>
       </label>
       {error && (
