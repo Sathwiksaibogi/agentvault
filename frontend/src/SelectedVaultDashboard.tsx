@@ -36,6 +36,7 @@ import SelectedVaultPaymentApprovalPanel from "./SelectedVaultPaymentApprovalPan
 
 type ConsoleSection =
   | "overview"
+  | "activity"
   | "deposit"
   | "agents"
   | "approvals"
@@ -49,6 +50,12 @@ const consoleSections = [
     name: "Overview",
     description: "Treasury overview",
     icon: LayoutDashboard,
+  },
+  {
+    id: "activity",
+    name: "Activity",
+    description: "On-chain transactions",
+    icon: Activity,
   },
   {
     id: "deposit",
@@ -91,6 +98,12 @@ const sectionDetails: Record<
     title: "Treasury overview",
     description:
       "A clear view of your vault's funds, reservations, and active agents.",
+  },
+  activity: {
+    eyebrow: "AUDIT TRAIL",
+    title: "Activity history",
+    description:
+      "Confirmed on-chain transactions and payment history for this vault.",
   },
   deposit: {
     eyebrow: "TREASURY FUNDING",
@@ -189,6 +202,18 @@ type Treasury = {
   availableBaseUnits: string;
 };
 
+type ActivityEntry = {
+  signature: string;
+  slot: number;
+  blockTimeUnix: number | null;
+  agentId: string;
+  workflow: string;
+  taskId: number;
+  taskPda: string;
+  succeeded: boolean;
+  explorerUrl: string;
+};
+
 function walletProvider(): Wallet | null {
   const browser = window as unknown as {
     phantom?: { solana?: Wallet };
@@ -235,6 +260,7 @@ export default function SelectedVaultDashboard() {
   const [session, setSession] = useState<Session | null>(null);
   const [treasury, setTreasury] = useState<Treasury | null>(null);
   const [agents, setAgents] = useState<AgentRow[] | null>(null);
+  const [activity, setActivity] = useState<ActivityEntry[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [lastVerifiedAt, setLastVerifiedAt] = useState<Date | null>(null);
@@ -245,9 +271,18 @@ export default function SelectedVaultDashboard() {
 
   const refresh = useCallback(async () => {
     try {
-      const [value, inventory] = await Promise.all([
+      const [value, inventory, activityRes] = await Promise.all([
         requestJson<Treasury>("/owner-vault/api/treasury"),
         requestJson<AgentsResponse>("/owner-vault/api/agents"),
+        requestJson<{
+          network: "devnet";
+          vault: string;
+          activity: ActivityEntry[];
+        }>("/owner-vault/api/activity").catch(() => ({
+          network: "devnet" as const,
+          vault,
+          activity: [],
+        })),
       ]);
       if (
         value.vault !== vault ||
@@ -261,9 +296,10 @@ export default function SelectedVaultDashboard() {
           "Selected-vault data does not match the authenticated session"
         );
       }
-      // Update both verified snapshots together, never mix fresh and stale scopes.
+      // Update verified snapshots together, never mix fresh and stale scopes.
       setTreasury(value);
       setAgents(inventory.agents);
+      setActivity(activityRes.activity);
       setLastVerifiedAt(new Date());
       setError(null);
     } catch (cause) {
@@ -302,8 +338,17 @@ export default function SelectedVaultDashboard() {
           void Promise.all([
             requestJson<Treasury>("/owner-vault/api/treasury"),
             requestJson<AgentsResponse>("/owner-vault/api/agents"),
+            requestJson<{
+              network: "devnet";
+              vault: string;
+              activity: ActivityEntry[];
+            }>("/owner-vault/api/activity").catch(() => ({
+              network: "devnet" as const,
+              vault,
+              activity: [],
+            })),
           ])
-            .then(([value, inventory]) => {
+            .then(([value, inventory, activityRes]) => {
               if (!active) return;
               if (
                 value.vault !== vault ||
@@ -318,6 +363,7 @@ export default function SelectedVaultDashboard() {
               }
               setTreasury(value);
               setAgents(inventory.agents);
+              setActivity(activityRes.activity);
               setLastVerifiedAt(new Date());
               setError(null);
             })
@@ -412,6 +458,7 @@ export default function SelectedVaultDashboard() {
       setSession({ authenticated: false });
       setTreasury(null);
       setAgents(null);
+      setActivity(null);
       setError(null);
     } catch {
       setError("Unable to end owner session; retry sign-out");
@@ -915,15 +962,108 @@ export default function SelectedVaultDashboard() {
                     </button>
                   </div>
                   <div className="av-console-readonly">
-                    <CircleAlert size={17} />
+                    <ShieldCheck size={17} />
                     <p>
-                      Payment execution and activity history are not available
-                      in this selected-vault view. Use Payment approvals to sign
-                      an exact request for separate CLI preview; no payment is
-                      executed by this browser console.
+                      Inspect confirmed on-chain transactions and payment
+                      history in the Activity tab. Use Payment approvals to sign
+                      an exact request for separate Devnet preview; no live
+                      payments are executed directly from this browser console.
                     </p>
                   </div>
                 </>
+              )}
+            </div>
+
+            <div
+              className="av-console-view"
+              hidden={activeSection !== "activity"}
+            >
+              <div className="av-console-section-meta">
+                <span>
+                  {activity?.length ?? 0} confirmed transaction
+                  {activity?.length === 1 ? "" : "s"}
+                </span>
+                <button
+                  type="button"
+                  disabled={refreshing}
+                  onClick={() => void refreshFromButton()}
+                >
+                  <RefreshCw
+                    size={16}
+                    className={refreshing ? "av-refresh-spin" : undefined}
+                  />{" "}
+                  Refresh activity
+                </button>
+              </div>
+              {activity === null && (
+                <div role="status" className="av-console-loading">
+                  Loading confirmed on-chain activity…
+                </div>
+              )}
+              {activity !== null && activity.length === 0 && (
+                <div className="av-console-empty">
+                  <Activity size={28} />
+                  <h2>No transaction activity yet</h2>
+                  <p>
+                    Confirmed on-chain transactions and payment settlements
+                    referencing this vault's tasks will appear here.
+                  </p>
+                </div>
+              )}
+              {activity !== null && activity.length > 0 && (
+                <div className="av-console-agents-list">
+                  {activity.map((entry) => (
+                    <article className="av-console-agent" key={entry.signature}>
+                      <div className="av-console-agent-head">
+                        <div className="av-console-agent-head-main">
+                          <span className="av-console-agent-avatar">
+                            <Activity size={21} />
+                          </span>
+                          <div>
+                            <span className="av-console-overline">
+                              SLOT {entry.slot} ·{" "}
+                              {entry.blockTimeUnix
+                                ? new Date(
+                                    entry.blockTimeUnix * 1000
+                                  ).toLocaleString()
+                                : "Confirmed"}
+                            </span>
+                            <h2>
+                              <a
+                                href={entry.explorerUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{
+                                  color: "inherit",
+                                  textDecoration: "underline",
+                                }}
+                                title={entry.signature}
+                              >
+                                {compactAddress(entry.signature)}
+                              </a>
+                            </h2>
+                            <small title={entry.taskPda}>
+                              Task #{entry.taskId} (
+                              {compactAddress(entry.taskPda)})
+                            </small>
+                          </div>
+                        </div>
+                        <span
+                          className={`av-console-status ${
+                            entry.succeeded ? "good" : "off"
+                          }`}
+                        >
+                          {entry.succeeded ? (
+                            <CheckCircle2 size={14} />
+                          ) : (
+                            <CircleAlert size={14} />
+                          )}{" "}
+                          {entry.succeeded ? "Confirmed" : "Failed"}
+                        </span>
+                      </div>
+                    </article>
+                  ))}
+                </div>
               )}
             </div>
 

@@ -52,6 +52,22 @@ export interface SelectedVaultRpc extends ConfirmedAccountReader {
   ): Promise<AccountInfo<Buffer> | null>;
 }
 
+export interface SelectedVaultActivityResponse {
+  network: "devnet";
+  vault: string;
+  activity: Array<{
+    signature: string;
+    slot: number;
+    blockTimeUnix: number | null;
+    agentId: string;
+    workflow: string;
+    taskId: number;
+    taskPda: string;
+    succeeded: boolean;
+    explorerUrl: string;
+  }>;
+}
+
 export interface SelectedVaultSessionOptions {
   fallbackHandler: RequestListener;
   rpc: SelectedVaultRpc;
@@ -65,6 +81,9 @@ export interface SelectedVaultSessionOptions {
   readScopedAgents?: (
     verified: VerifiedOwnerVault
   ) => Promise<SelectedVaultAgentsResponse>;
+  readScopedActivity?: (
+    verified: VerifiedOwnerVault
+  ) => Promise<SelectedVaultActivityResponse>;
   now?: () => number;
 }
 
@@ -149,6 +168,7 @@ export function createSelectedVaultSessionHandler(
     frontendOrigin,
     developerKeyRepository,
     readScopedAgents,
+    readScopedActivity,
     now = Date.now,
   } = options;
   if (frontendOrigin !== "http://127.0.0.1:5173") {
@@ -411,7 +431,8 @@ export function createSelectedVaultSessionHandler(
       if (
         url.search ||
         (path !== "/owner-vault/api/treasury" &&
-          path !== "/owner-vault/api/agents")
+          path !== "/owner-vault/api/agents" &&
+          path !== "/owner-vault/api/activity")
       ) {
         return void sendJson(res, 404, { error: "Endpoint not found" });
       }
@@ -426,6 +447,18 @@ export function createSelectedVaultSessionHandler(
             ownerAddress: session.owner,
             vaultAddress: session.vault,
           });
+          if (path === "/owner-vault/api/activity") {
+            if (!readScopedActivity)
+              throw new Error("Scoped activity reader unavailable");
+            const data = await readScopedActivity(verified);
+            if (data.network !== "devnet" || data.vault !== verified.vault) {
+              throw new Error(
+                "Scoped activity reader returned a different vault"
+              );
+            }
+            sendJson(res, 200, data);
+            return;
+          }
           if (path === "/owner-vault/api/agents") {
             if (!readScopedAgents)
               throw new Error("Scoped agent reader unavailable");

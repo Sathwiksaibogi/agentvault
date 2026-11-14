@@ -482,6 +482,56 @@ async function main(): Promise<void> {
           taskAccounts,
         });
       },
+      readScopedActivity: async (verified) => {
+        const [agentAccounts, taskAccounts] = await Promise.all([
+          program.account.agent.all(),
+          program.account.task.all(),
+        ]);
+        const inventory = projectVerifiedVaultAgentsAndTasks({
+          verified,
+          agentAccounts,
+          taskAccounts,
+        });
+        const taskPdas = inventory.agents.flatMap((agent) =>
+          agent.tasks.map((task) => ({
+            agentId: agent.authority.slice(0, 8),
+            workflow: "task",
+            taskId: Number(task.taskId),
+            taskPda: new PublicKey(task.taskPda),
+          }))
+        );
+        const pages = await mapWithConcurrency(
+          taskPdas,
+          4,
+          async (taskInfo) => {
+            const signatures = await connection.getSignaturesForAddress(
+              taskInfo.taskPda,
+              { limit: 12 },
+              "confirmed"
+            );
+            return signatures.map((entry) => ({
+              signature: entry.signature,
+              slot: entry.slot,
+              blockTimeUnix: entry.blockTime,
+              agentId: taskInfo.agentId,
+              workflow: taskInfo.workflow,
+              taskId: taskInfo.taskId,
+              taskPda: taskInfo.taskPda.toBase58(),
+              succeeded: entry.err === null,
+              explorerUrl: `https://explorer.solana.com/tx/${entry.signature}?cluster=devnet`,
+            }));
+          }
+        );
+        const activity = pages
+          .flat()
+          .sort((a, b) => b.slot - a.slot)
+          .slice(0, 20);
+        return {
+          network: "devnet" as const,
+          vault: verified.vault,
+          activity,
+        };
+      },
     });
     const server = createServer(
       createModelAAgentInboxHttpHandler({
