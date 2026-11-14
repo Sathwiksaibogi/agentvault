@@ -18,6 +18,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -27,6 +28,7 @@ import type {
   ServerResponse,
 } from "node:http";
 import { PublicKey, type AccountInfo } from "@solana/web3.js";
+import BN from "bn.js";
 import nacl from "tweetnacl";
 import { createSelectedVaultDeveloperKeyHandler } from "./owner-vault-developer-keys";
 import type { DeveloperApiKeyRepository } from "./api-key-repository";
@@ -95,6 +97,7 @@ export interface SelectedVaultApprovalsResponse {
       | "executed"
       | "pending_owner_approval";
     agentAuthority: string;
+    taskId?: string;
     recipient: string;
     amountBaseUnits: string;
     nonce: string;
@@ -123,6 +126,13 @@ export interface SelectedVaultSessionOptions {
   readScopedApprovals?: (
     verified: VerifiedOwnerVault
   ) => Promise<SelectedVaultApprovalsResponse>;
+  readScopedPendingApprovals?: (
+    verified: VerifiedOwnerVault
+  ) => Promise<ModelBPendingRequest[]>;
+  saveScopedPendingApproval?: (
+    verified: VerifiedOwnerVault,
+    request: ModelBPendingRequest
+  ) => Promise<void>;
   saveScopedApproval?: (
     verified: VerifiedOwnerVault,
     approvalData: {
@@ -132,6 +142,150 @@ export interface SelectedVaultSessionOptions {
     }
   ) => Promise<{ requestId: string }>;
   now?: () => number;
+}
+
+export type ModelBPendingRequest = {
+  requestId: string;
+  vault: string;
+  agentAuthority: string;
+  taskId: string;
+  recipient: string;
+  amountBaseUnits: string;
+  expiresAtUnix: string;
+  nonce?: string;
+  status: "pending_owner_approval";
+  description?: string;
+  createdAtUnix?: number;
+};
+
+async function findPendingModelBRequest(args: {
+  verified: VerifiedOwnerVault;
+  requestId: string;
+  runtimeDir?: string;
+  readScopedPendingApprovals?: (
+    v: VerifiedOwnerVault
+  ) => Promise<ModelBPendingRequest[]>;
+  readScopedApprovals?: (
+    v: VerifiedOwnerVault
+  ) => Promise<SelectedVaultApprovalsResponse>;
+}): Promise<ModelBPendingRequest | null> {
+  if (args.readScopedPendingApprovals) {
+    const list = await args.readScopedPendingApprovals(args.verified);
+    const found = list.find((p) => p.requestId === args.requestId);
+    if (found) return found;
+  }
+  if (args.readScopedApprovals) {
+    const resp = await args.readScopedApprovals(args.verified);
+    const found = resp.approvals.find(
+      (a) =>
+        a.requestId === args.requestId &&
+        a.status === "pending_owner_approval"
+    );
+    if (found) {
+      return {
+        requestId: found.requestId,
+        vault: args.verified.vault,
+        agentAuthority: found.agentAuthority,
+        taskId: found.taskId ?? "1",
+        recipient: found.recipient,
+        amountBaseUnits: found.amountBaseUnits,
+        expiresAtUnix: found.expiresAtUnix,
+        status: "pending_owner_approval",
+      };
+    }
+  }
+  if (args.runtimeDir) {
+    const pendingDir = join(args.runtimeDir, "model-b-pending");
+    const pendingPath = join(pendingDir, `${args.requestId}.json`);
+    if (existsSync(pendingPath)) {
+      try {
+        const raw = JSON.parse(readFileSync(pendingPath, "utf8"));
+        if (raw.vault === args.verified.vault)
+          return raw as ModelBPendingRequest;
+      } catch {
+        /* ignore corrupt */
+      }
+    }
+    const altPath = join(
+      args.runtimeDir,
+      "approvals",
+      `${args.requestId}.pending.json`
+    );
+    if (existsSync(altPath)) {
+      try {
+        const raw = JSON.parse(readFileSync(altPath, "utf8"));
+        if (raw.vault === args.verified.vault)
+          return raw as ModelBPendingRequest;
+      } catch {
+        /* ignore corrupt */
+      }
+    }
+  }
+  return null;
+}
+
+async function getVerifiedTaskOnChain(args: {
+  rpc: SelectedVaultRpc;
+  taskPda: PublicKey;
+  vaultKey: PublicKey;
+  agentPda: PublicKey;
+  verified: VerifiedOwnerVault;
+  readScopedAgents?: (
+    v: VerifiedOwnerVault
+  ) => Promise<SelectedVaultAgentsResponse>;
+}): Promise<{
+  recipient: PublicKey;
+  budget: bigint;
+  spent: bigint;
+  nextNonce: bigint;
+  expiresAtUnix: bigint;
+  active: boolean;
+}> {
+  if (args.readScopedAgents) {
+    const inv = await args.readScopedAgents(args.verified);
+    for (const agent of inv.agents) {
+      for (const task of agent.tasks) {
+        if (task.taskPda === args.taskPda.toBase58()) {
+          return {
+            recipient: new PublicKey(task.recipient),
+            budget: BigInt(task.budgetBaseUnits),
+            spent: BigInt(task.spentBaseUnits),
+            nextNonce: BigInt(task.nextNonce),
+            expiresAtUnix: BigInt(task.expiresAtUnix),
+            active: task.active,
+          };
+        }
+      }
+    }
+  }
+
+  const info = await args.rpc.getAccountInfo(args.taskPda, "confirmed");
+  if (!info || info.data.length < 146) {
+    throw new Error("Task account not found or invalid on-chain");
+  }
+  const taskVault = new PublicKey(info.data.subarray(8, 40));
+  const taskAgent = new PublicKey(info.data.subarray(40, 72));
+  if (!taskVault.equals(args.vaultKey) || !taskAgent.equals(args.agentPda)) {
+    throw new Error(
+      "Task account vault/agent relationship mismatch on-chain"
+    );
+  }
+  const recipient = new PublicKey(info.data.subarray(80, 112));
+  const budget = info.data.readBigUInt64LE(112);
+  const spent = info.data.readBigUInt64LE(120);
+  const expiresAtUnix = info.data.readBigInt64LE(128);
+  const nextNonce = info.data.readBigUInt64LE(136);
+  const active =
+    info.data.length >= 178 ? info.data[176] === 1 : info.data[144] === 1;
+
+  return {
+    recipient,
+    budget,
+    spent,
+    nextNonce,
+    expiresAtUnix,
+    active,
+  };
 }
 
 function sendJson(
@@ -218,6 +372,8 @@ export function createSelectedVaultSessionHandler(
     readScopedAgents,
     readScopedActivity,
     readScopedApprovals,
+    readScopedPendingApprovals,
+    saveScopedPendingApproval,
     saveScopedApproval,
     now = Date.now,
   } = options;
@@ -475,6 +631,69 @@ export function createSelectedVaultSessionHandler(
       return;
     }
 
+    if (path === "/owner-vault/api/pending-requests" && req.method === "POST") {
+      const session = currentSession(req);
+      if (!session) {
+        return void sendJson(res, 401, { error: "Owner session required" });
+      }
+      void (async () => {
+        let body: Record<string, unknown>;
+        try {
+          body = await jsonBody(req);
+        } catch {
+          return void sendJson(res, 400, { error: "Invalid JSON body" });
+        }
+        try {
+          await requireDevnet();
+          const verified = await verifyOwnerVaultOnChain({
+            rpc,
+            ownerAddress: session.owner,
+            vaultAddress: session.vault,
+          });
+          const requestId = String(body.requestId ?? "");
+          if (!/^[a-zA-Z0-9_-]{8,64}$/.test(requestId)) {
+            return void sendJson(res, 400, { error: "Invalid request ID" });
+          }
+          const pendingRequest: ModelBPendingRequest = {
+            requestId,
+            vault: verified.vault,
+            agentAuthority: String(body.agentAuthority ?? ""),
+            taskId: String(body.taskId ?? "0"),
+            recipient: String(body.recipient ?? ""),
+            amountBaseUnits: String(body.amountBaseUnits ?? ""),
+            expiresAtUnix: String(body.expiresAtUnix ?? ""),
+            nonce: body.nonce ? String(body.nonce) : undefined,
+            status: "pending_owner_approval",
+            description: body.description ? String(body.description) : undefined,
+            createdAtUnix: Math.floor(now() / 1000),
+          };
+          if (saveScopedPendingApproval) {
+            await saveScopedPendingApproval(verified, pendingRequest);
+          } else if (runtimeDir) {
+            const pendingDir = join(runtimeDir, "model-b-pending");
+            mkdirSync(pendingDir, { recursive: true, mode: 0o700 });
+            writeFileSync(
+              join(pendingDir, `${requestId}.json`),
+              JSON.stringify(pendingRequest, null, 2) + "\n"
+            );
+          }
+          sendJson(res, 201, {
+            ok: true,
+            requestId,
+            status: "pending_owner_approval",
+          });
+        } catch (err) {
+          sendJson(res, 500, {
+            error:
+              err instanceof Error
+                ? err.message
+                : "Failed to record pending request",
+          });
+        }
+      })();
+      return;
+    }
+
     if (path === "/owner-vault/api/approvals" && req.method === "POST") {
       const session = currentSession(req);
       if (!session) {
@@ -504,15 +723,172 @@ export function createSelectedVaultSessionHandler(
           }
 
           const paymentApproval = paymentApprovalV2Schema.parse(paymentInput);
+
+          // 1. Verify network, genesis hash, program, vault, owner, mint and pause state
+          if (paymentApproval.genesisHash !== expectedGenesisHash) {
+            return void sendJson(res, 400, {
+              error: "Genesis hash mismatch",
+            });
+          }
+          if (paymentApproval.programId !== AGENTVAULT_PROGRAM) {
+            return void sendJson(res, 400, {
+              error: "Program ID mismatch",
+            });
+          }
           if (
             paymentApproval.owner !== session.owner ||
-            paymentApproval.vault !== session.vault
+            paymentApproval.vault !== session.vault ||
+            paymentApproval.vault !== verified.vault
           ) {
             return void sendJson(res, 403, {
               error: "Approval does not match session owner or vault",
             });
           }
+          if (paymentApproval.mint !== verified.mint) {
+            return void sendJson(res, 400, {
+              error: "Token mint mismatch",
+            });
+          }
+          if (verified.paused) {
+            return void sendJson(res, 400, {
+              error: "Vault is paused on-chain",
+            });
+          }
 
+          // 2. Bind each owner approval to a real pending Model B request
+          const pending = await findPendingModelBRequest({
+            verified,
+            requestId: paymentApproval.requestId,
+            runtimeDir,
+            readScopedPendingApprovals,
+            readScopedApprovals,
+          });
+          if (!pending) {
+            return void sendJson(res, 404, {
+              error: `No pending Model B request found for request ID ${paymentApproval.requestId}`,
+            });
+          }
+          if (
+            paymentApproval.recipient !== pending.recipient ||
+            paymentApproval.amountBaseUnits !== pending.amountBaseUnits ||
+            paymentApproval.agentAuthority !== pending.agentAuthority
+          ) {
+            return void sendJson(res, 400, {
+              error:
+                "Approval parameters do not match pending Model B request",
+            });
+          }
+
+          // 3. Derive and verify expected Agent PDA
+          const authorityKey = new PublicKey(paymentApproval.agentAuthority);
+          const vaultKey = new PublicKey(verified.vault);
+          const programKey = new PublicKey(AGENTVAULT_PROGRAM);
+          const [expectedAgentPda] = PublicKey.findProgramAddressSync(
+            [
+              Buffer.from("agent"),
+              vaultKey.toBuffer(),
+              authorityKey.toBuffer(),
+            ],
+            programKey
+          );
+          if (paymentApproval.agent !== expectedAgentPda.toBase58()) {
+            return void sendJson(res, 400, {
+              error: "Agent PDA mismatch",
+            });
+          }
+
+          // 4. Derive expected Task PDA and verify live on-chain task state
+          const taskIdNumber = BigInt(pending.taskId ?? "0");
+          const taskIdBytes = Buffer.alloc(8);
+          taskIdBytes.writeBigUInt64LE(taskIdNumber);
+          const [expectedApprovedTaskPda] = PublicKey.findProgramAddressSync(
+            [
+              Buffer.from("approved-task"),
+              expectedAgentPda.toBuffer(),
+              taskIdBytes,
+            ],
+            programKey
+          );
+          const [expectedLegacyTaskPda] = PublicKey.findProgramAddressSync(
+            [
+              Buffer.from("task"),
+              expectedAgentPda.toBuffer(),
+              taskIdBytes,
+            ],
+            programKey
+          );
+          const taskKey = new PublicKey(paymentApproval.task);
+          if (
+            !taskKey.equals(expectedApprovedTaskPda) &&
+            !taskKey.equals(expectedLegacyTaskPda)
+          ) {
+            return void sendJson(res, 400, {
+              error: "Task PDA mismatch for agent and task ID",
+            });
+          }
+
+          const taskState = await getVerifiedTaskOnChain({
+            rpc,
+            taskPda: taskKey,
+            vaultKey,
+            agentPda: expectedAgentPda,
+            verified,
+            readScopedAgents,
+          });
+
+          if (!taskState.active) {
+            return void sendJson(res, 400, {
+              error: "Task is inactive or revoked on-chain",
+            });
+          }
+          if (
+            !taskState.recipient.equals(
+              new PublicKey(paymentApproval.recipient)
+            )
+          ) {
+            return void sendJson(res, 400, {
+              error: "Recipient does not match on-chain task allowlist",
+            });
+          }
+
+          // CRITICAL: Derive the nonce from verified current task state instead of hardcoding zero
+          if (paymentApproval.nonce !== taskState.nextNonce.toString()) {
+            return void sendJson(res, 400, {
+              error: `Nonce mismatch: approval specified ${paymentApproval.nonce}, but on-chain task nextNonce is ${taskState.nextNonce}`,
+            });
+          }
+
+          const amount = BigInt(paymentApproval.amountBaseUnits);
+          if (amount <= BigInt(0)) {
+            return void sendJson(res, 400, {
+              error: "Payment amount must be positive",
+            });
+          }
+          if (amount > taskState.budget - taskState.spent) {
+            return void sendJson(res, 400, {
+              error: "Payment amount exceeds remaining task budget",
+            });
+          }
+          if (amount > BigInt(verified.totalReservedBaseUnits)) {
+            return void sendJson(res, 400, {
+              error: "Payment amount exceeds vault reserved balance",
+            });
+          }
+
+          const expiry = BigInt(paymentApproval.expiresAtUnix);
+          const nowUnix = BigInt(Math.floor(now() / 1000));
+          if (expiry <= nowUnix) {
+            return void sendJson(res, 400, {
+              error: "Payment approval has already expired",
+            });
+          }
+          if (expiry > taskState.expiresAtUnix) {
+            return void sendJson(res, 400, {
+              error: "Payment approval expiry exceeds task expiry",
+            });
+          }
+
+          // 5. Preserve existing signature verification
           const valid = verifyPaymentApprovalV2(
             paymentApproval,
             signatureBase64,
@@ -549,6 +925,20 @@ export function createSelectedVaultSessionHandler(
               fsyncSync(fd);
             } finally {
               closeSync(fd);
+            }
+
+            // Clean up pending file if present in model-b-pending/
+            const pendingFile = join(
+              runtimeDir,
+              "model-b-pending",
+              `${paymentApproval.requestId}.json`
+            );
+            if (existsSync(pendingFile)) {
+              try {
+                unlinkSync(pendingFile);
+              } catch {
+                /* ignore */
+              }
             }
           }
 
@@ -633,6 +1023,50 @@ export function createSelectedVaultSessionHandler(
                   } catch {
                     /* skip corrupt */
                   }
+                }
+              }
+              const pendingDir = join(runtimeDir, "model-b-pending");
+              if (existsSync(pendingDir)) {
+                for (const file of readdirSync(pendingDir)) {
+                  if (!file.endsWith(".json")) continue;
+                  try {
+                    const raw = JSON.parse(
+                      readFileSync(join(pendingDir, file), "utf8")
+                    );
+                    if (raw.vault === verified.vault) {
+                      approvals.push({
+                        requestId: raw.requestId,
+                        authorizationModel: "model-b",
+                        status: "pending_owner_approval",
+                        agentAuthority: raw.agentAuthority,
+                        recipient: raw.recipient,
+                        amountBaseUnits: raw.amountBaseUnits,
+                        nonce: raw.nonce ?? "0",
+                        expiresAtUnix: raw.expiresAtUnix,
+                        createdAtUnix: raw.createdAtUnix,
+                      });
+                    }
+                  } catch {
+                    /* skip corrupt */
+                  }
+                }
+              }
+            }
+            if (readScopedPendingApprovals) {
+              const pendingList = await readScopedPendingApprovals(verified);
+              for (const p of pendingList) {
+                if (p.vault === verified.vault) {
+                  approvals.push({
+                    requestId: p.requestId,
+                    authorizationModel: "model-b",
+                    status: "pending_owner_approval",
+                    agentAuthority: p.agentAuthority,
+                    recipient: p.recipient,
+                    amountBaseUnits: p.amountBaseUnits,
+                    nonce: p.nonce ?? "0",
+                    expiresAtUnix: p.expiresAtUnix,
+                    createdAtUnix: p.createdAtUnix,
+                  });
                 }
               }
             }

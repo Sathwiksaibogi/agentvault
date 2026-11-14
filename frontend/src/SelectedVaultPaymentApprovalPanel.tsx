@@ -25,6 +25,7 @@ type AgentTask = {
   taskId: string;
   recipient: string;
   remainingBaseUnits: string;
+  nextNonce?: string;
   expiresAtUnix: string;
   active: boolean;
 };
@@ -122,6 +123,7 @@ export default function SelectedVaultPaymentApprovalPanel({
     "procurement"
   );
   const [description, setDescription] = useState("");
+  const [selectedPendingId, setSelectedPendingId] = useState<string | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -256,7 +258,9 @@ export default function SelectedVaultPaymentApprovalPanel({
         "confirmed"
       );
       const genesisHash = validateCanonical(await connection.getGenesisHash());
-      const requestId = crypto.randomUUID().replace(/-/g, "").slice(0, 32);
+      const requestId =
+        selectedPendingId ||
+        crypto.randomUUID().replace(/-/g, "").slice(0, 32);
 
       if (authModel === "model-b") {
         // Model B (PaymentApprovalV2, native Ed25519 on-chain verification)
@@ -272,7 +276,7 @@ export default function SelectedVaultPaymentApprovalPanel({
           task: selected.task.taskPda,
           recipient: liveTask.recipient,
           amountBaseUnits: String(units),
-          nonce: "0",
+          nonce: liveTask.nextNonce ?? "0",
           expiresAtUnix: String(expiresAtUnix),
           requestId,
         };
@@ -399,6 +403,36 @@ export default function SelectedVaultPaymentApprovalPanel({
                   <span>Amount: <strong>{app.amountBaseUnits}</strong> base units</span>
                   <span>Nonce: <code>{app.nonce}</code></span>
                   <span>Recipient: <code>{app.recipient.slice(0, 8)}…{app.recipient.slice(-6)}</code></span>
+                  {app.status === "pending_owner_approval" && (
+                    <button
+                      type="button"
+                      style={{
+                        marginLeft: "auto",
+                        background: "#3b82f6",
+                        color: "#fff",
+                        border: "none",
+                        borderRadius: "4px",
+                        padding: "4px 8px",
+                        cursor: "pointer",
+                        fontSize: "12px",
+                      }}
+                      onClick={() => {
+                        setSelectedPendingId(app.requestId);
+                        setAmountText(app.amountBaseUnits);
+                        setAuthModel("model-b");
+                        const matchedChoice = choices.find(
+                          (c) =>
+                            c.task.recipient === app.recipient ||
+                            c.agent.authority === app.agentAuthority
+                        );
+                        if (matchedChoice) setTaskPda(matchedChoice.task.taskPda);
+                      }}
+                    >
+                      {selectedPendingId === app.requestId
+                        ? "Selected"
+                        : "Select to Approve"}
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
