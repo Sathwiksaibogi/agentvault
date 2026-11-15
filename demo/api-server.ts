@@ -1,7 +1,17 @@
 import * as anchor from "@anchor-lang/core";
 import BN from "bn.js";
+import dotenv from "dotenv";
+import { homedir } from "node:os";
 import { strict as assert } from "node:assert";
 import { createServer } from "node:http";
+
+dotenv.config();
+if (!process.env.AGENTVAULT_DATABASE_URL) {
+  const cfgPath = join(homedir(), ".config/agentvault/api.env");
+  if (existsSync(cfgPath)) {
+    dotenv.config({ path: cfgPath });
+  }
+}
 import { createApiHandler } from "./api-handler";
 import { createModelAPaymentHttpHandler } from "./model-a-payment-http";
 import { createModelAAgentInboxHttpHandler } from "./model-a-agent-inbox";
@@ -74,9 +84,18 @@ const DEMO_AGENTS = [
   },
 ] as const;
 
-const state = JSON.parse(
-  readFileSync(join(RUNTIME_DIR, "state.json"), "utf8")
-) as DemoState;
+const statePath = join(RUNTIME_DIR, "state.json");
+const state: DemoState = existsSync(statePath)
+  ? JSON.parse(readFileSync(statePath, "utf8"))
+  : {
+      genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+      programId: "BVhTPuAK9birmLeYBeAuBMusEdYW9oFjQeJeMU9hNX9d",
+      vault: "G2GY1MSTtYK2UMiEJWCDDHQPBwTHKn1b9jZvSkghn77U",
+      owner: "CMbQSedspHrgqKEhUpYrxiaZkoseWcuEMWoLb4Ah7Wc",
+      mint: "EwgEeTw1XurM1FuUDKDNwss7T4Qc4sDgzBupAFYMoP9x",
+      treasury: "9jf3fXNboToPTNqMpA5wxHiBTF442kRLF7dFYiasQucr",
+      vaultId: "8001",
+    };
 
 const idl = JSON.parse(
   readFileSync(join(process.cwd(), "target/idl/agentvault.json"), "utf8")

@@ -4,7 +4,8 @@
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
     "test:api:unit": "tsx --test demo/*.test.ts",
-"test:api:integration": "tsx --test demo/api-key-postgres-repository.integration.ts"
+    "test:api:integration": "tsx --test demo/api-key-postgres-repository.integration.ts",
+    "worker:model-a": "tsx demo/model-a-worker-runner.ts"
   },
   "dependencies": {
     "@anchor-lang/core": "^1.2.0",
