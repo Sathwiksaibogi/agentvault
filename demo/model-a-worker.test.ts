@@ -31,6 +31,9 @@ import {
   ModelAWorker,
   encodeAgentPaymentDecision,
   CrossProcessTaskLock,
+  LiveExecutionProhibitedError,
+  MockBroadcastCapability,
+  LiveDevnetBroadcastCapability,
   type ModelAWorkerOptions,
   type ModelAExecutionAdapter,
 } from "./model-a-worker";
@@ -1385,6 +1388,77 @@ test("preview mode: prepares transaction without signing or broadcasting", async
       false,
       "Preview mode must never invoke broadcast"
     );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("capability isolation: simulated mode rejects live network broadcast capability by construction", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const liveBroadcaster = new LiveDevnetBroadcastCapability({
+      sendRawTransaction: async () => "tx",
+      confirmTransaction: async () => ({ value: { err: null } }),
+    });
+
+    assert.throws(
+      () =>
+        h.createWorker({
+          adapter: {
+            mode: "simulated",
+            broadcaster: liveBroadcaster,
+          },
+        }),
+      /Simulated mode cannot accept or invoke a live network broadcast capability/
+    );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("capability isolation: live devnet mode rejects mock broadcast capability", async () => {
+  const h = makeWorkerHarness();
+  try {
+    process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST = "true";
+    const mockBroadcaster = new MockBroadcastCapability();
+
+    assert.throws(
+      () =>
+        h.createWorker({
+          adapter: {
+            mode: "live_devnet",
+            broadcaster: mockBroadcaster as any,
+          },
+        }),
+      /Live Devnet mode requires an authorized live network broadcast capability/
+    );
+  } finally {
+    delete process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST;
+    h.cleanup();
+  }
+});
+
+test("capability isolation: preview mode discards broadcaster by construction", async () => {
+  const h = makeWorkerHarness();
+  try {
+    let broadcastCalled = false;
+    const mockBroadcaster = new MockBroadcastCapability(async () => {
+      broadcastCalled = true;
+      return "sig";
+    });
+
+    const worker = h.createWorker({
+      adapter: {
+        mode: "preview",
+        broadcaster: mockBroadcaster,
+      },
+    });
+
+    const { record: intent } = h.createIntent("req_preview_cap_01");
+    const result = await worker.processPaymentIntent(intent);
+
+    assert.equal(result.status, "prepared");
+    assert.equal(broadcastCalled, false, "Preview mode must never broadcast");
   } finally {
     h.cleanup();
   }

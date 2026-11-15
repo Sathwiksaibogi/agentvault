@@ -109,8 +109,98 @@ export type ModelAWorkerRecoveryRecord = {
   reason?: string;
 };
 
+export type BroadcastCapabilityType = "mock" | "live_network";
+
+export interface ModelABroadcastCapability {
+  readonly capabilityType: BroadcastCapabilityType;
+  sendRawTransaction(raw: Buffer, options?: unknown): Promise<string>;
+  confirmTransaction(
+    strategy: unknown,
+    commitment?: string
+  ): Promise<{
+    value: { err: unknown | null; confirmationStatus?: string };
+    context?: { slot: number };
+  }>;
+}
+
+export class MockBroadcastCapability implements ModelABroadcastCapability {
+  readonly capabilityType = "mock" as const;
+
+  constructor(
+    private readonly sender?: (raw: Buffer, options?: unknown) => Promise<string>,
+    private readonly confirmer?: (
+      strategy: unknown,
+      commitment?: string
+    ) => Promise<{
+      value: { err: unknown | null; confirmationStatus?: string };
+      context?: { slot: number };
+    }>
+  ) {}
+
+  async sendRawTransaction(raw: Buffer, options?: unknown): Promise<string> {
+    if (this.sender) {
+      return this.sender(raw, options);
+    }
+    const tx = Transaction.from(raw);
+    return bs58.encode(tx.signature!);
+  }
+
+  async confirmTransaction(
+    strategy: unknown,
+    commitment?: string
+  ): Promise<{
+    value: { err: unknown | null; confirmationStatus?: string };
+    context?: { slot: number };
+  }> {
+    if (this.confirmer) {
+      return this.confirmer(strategy, commitment);
+    }
+    return {
+      value: { err: null, confirmationStatus: "confirmed" },
+      context: { slot: 1 },
+    };
+  }
+}
+
+export class LiveDevnetBroadcastCapability implements ModelABroadcastCapability {
+  readonly capabilityType = "live_network" as const;
+
+  constructor(
+    private readonly broadcastRpc: {
+      sendRawTransaction(raw: Buffer, options?: unknown): Promise<string>;
+      confirmTransaction(
+        strategy: unknown,
+        commitment?: string
+      ): Promise<{
+        value: { err: unknown | null; confirmationStatus?: string };
+        context?: { slot: number };
+      }>;
+    }
+  ) {}
+
+  async sendRawTransaction(raw: Buffer, options?: unknown): Promise<string> {
+    if (process.env.AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST !== "true") {
+      throw new LiveExecutionProhibitedError(
+        "Live network broadcast prohibited without explicit owner approval and AGENTVAULT_ALLOW_LIVE_AUTONOMOUS_BROADCAST=true"
+      );
+    }
+    return this.broadcastRpc.sendRawTransaction(raw, options);
+  }
+
+  async confirmTransaction(
+    strategy: unknown,
+    commitment?: string
+  ): Promise<{
+    value: { err: unknown | null; confirmationStatus?: string };
+    context?: { slot: number };
+  }> {
+    return this.broadcastRpc.confirmTransaction(strategy, commitment);
+  }
+}
+
 export interface ModelAExecutionAdapter {
   mode: "simulated" | "preview" | "live_devnet";
+  broadcaster?: ModelABroadcastCapability;
   signTransaction?(
     agentAuthority: PublicKey,
     transaction: Transaction
@@ -357,6 +447,7 @@ export class ModelAWorker {
   ) => Promise<{ decision: "PAY" | "REJECT"; reason: string }>;
   private readonly pollIntervalMs: number;
   private readonly now: () => number;
+  private readonly broadcaster: ModelABroadcastCapability | null;
 
   private readonly taskLocks = new TaskLock();
   private timer: NodeJS.Timeout | null = null;
@@ -379,6 +470,50 @@ export class ModelAWorker {
     this.evaluateAi = options.evaluateAi;
     this.pollIntervalMs = options.pollIntervalMs ?? 2000;
     this.now = options.now ?? Date.now;
+
+    // Resolve broadcaster capability by construction based on explicit adapter mode
+    if (this.adapter.mode === "preview") {
+      // Preview mode NEVER has broadcast capability by construction
+      this.broadcaster = null;
+    } else if (this.adapter.mode === "simulated") {
+      // Simulated mode CANNOT invoke a real network broadcast capability by construction
+      if (this.adapter.broadcaster) {
+        if (this.adapter.broadcaster.capabilityType === "live_network") {
+          throw new LiveExecutionProhibitedError(
+            "Simulated mode cannot accept or invoke a live network broadcast capability"
+          );
+        }
+        this.broadcaster = this.adapter.broadcaster;
+      } else if (this.rpc.sendRawTransaction && this.rpc.confirmTransaction) {
+        if (isRealNetworkRpc(this.rpc)) {
+          // If RPC is a real network connection, simulated mode refuses to construct a broadcaster from it
+          this.broadcaster = null;
+        } else {
+          // Mock RPC without real network connection gets wrapped into mock broadcast capability
+          this.broadcaster = new MockBroadcastCapability(
+            this.rpc.sendRawTransaction.bind(this.rpc),
+            this.rpc.confirmTransaction.bind(this.rpc) as any
+          );
+        }
+      } else {
+        this.broadcaster = null;
+      }
+    } else if (this.adapter.mode === "live_devnet") {
+      if (this.adapter.broadcaster) {
+        if (this.adapter.broadcaster.capabilityType !== "live_network") {
+          throw new LiveExecutionProhibitedError(
+            "Live Devnet mode requires an authorized live network broadcast capability"
+          );
+        }
+        this.broadcaster = this.adapter.broadcaster;
+      } else if (this.rpc.sendRawTransaction && this.rpc.confirmTransaction) {
+        this.broadcaster = new LiveDevnetBroadcastCapability(this.rpc as any);
+      } else {
+        this.broadcaster = null;
+      }
+    } else {
+      this.broadcaster = null;
+    }
   }
 
   private assertLiveExecutionAllowed(): void {
@@ -967,6 +1102,11 @@ export class ModelAWorker {
       }
 
       if (this.adapter.mode === "simulated") {
+        if (this.broadcaster && this.broadcaster.capabilityType === "live_network") {
+          throw new LiveExecutionProhibitedError(
+            "Simulated mode cannot invoke a live network broadcast capability by construction"
+          );
+        }
         if (isRealNetworkRpc(this.rpc)) {
           throw new LiveExecutionProhibitedError(
             "Simulated mode cannot broadcast to a real Solana RPC network adapter"
@@ -974,12 +1114,17 @@ export class ModelAWorker {
         }
       } else if (this.adapter.mode === "live_devnet") {
         this.assertLiveExecutionAllowed();
+        if (!this.broadcaster || this.broadcaster.capabilityType !== "live_network") {
+          throw new LiveExecutionProhibitedError(
+            "Live Devnet mode requires an authorized live network broadcast capability"
+          );
+        }
       }
 
-      if (this.rpc.sendRawTransaction && this.rpc.confirmTransaction) {
+      if (this.broadcaster) {
 
         const locallyPreparedSig = bs58.encode(prepared.transaction.signature!);
-        const txSig = await this.rpc.sendRawTransaction(prepared.raw, {
+        const txSig = await this.broadcaster.sendRawTransaction(prepared.raw, {
           skipPreflight: false,
           preflightCommitment: "confirmed",
           maxRetries: 2,
@@ -994,7 +1139,7 @@ export class ModelAWorker {
 
         let confirmRes: any;
         try {
-          confirmRes = await this.rpc.confirmTransaction(
+          confirmRes = await this.broadcaster.confirmTransaction(
             {
               signature: txSig,
               blockhash,

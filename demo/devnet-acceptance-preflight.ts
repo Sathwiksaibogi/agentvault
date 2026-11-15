@@ -50,11 +50,27 @@ export const REFERENCE_DEVNET_STATE = {
   mint: "EwgEeTw1XurM1FuUDKDNwss7T4Qc4sDgzBupAFYMoP9x",
 };
 
+export type DevnetPreflightOptions = {
+  rpcUrl?: string;
+  connection?: Connection;
+  program?: anchor.Program<Agentvault>;
+  programId?: PublicKey;
+  state?: Partial<typeof REFERENCE_DEVNET_STATE>;
+  clockTimeOverride?: number;
+};
+
 export type DevnetPreflightResult = {
   ok: boolean;
+  diagnosticOk: boolean;
+  acceptanceReadiness: "READY" | "BLOCKED";
+  blockedReason?: string;
   rpcAvailable: boolean;
   genesisHash: string;
   programExecutable: boolean;
+  clock: {
+    chainTimeUnix: number;
+    chainTimeIso: string;
+  };
   vault: {
     address: string;
     owner: string;
@@ -75,6 +91,7 @@ export type DevnetPreflightResult = {
     remaining: string;
     nextNonce: string;
     expiresAtUnix: number;
+    expiresAtIso: string;
     expired: boolean;
     active: boolean;
   };
@@ -88,13 +105,23 @@ export type DevnetPreflightResult = {
     success: boolean;
     logs?: string[];
     err?: unknown;
+    errorCode?: number;
+    errorName?: string;
   };
 };
 
 export async function runDevnetPreflight(
-  rpcUrl = "https://api.devnet.solana.com"
+  optionsOrRpcUrl: string | DevnetPreflightOptions = "https://api.devnet.solana.com"
 ): Promise<DevnetPreflightResult> {
-  const connection = new Connection(rpcUrl, "confirmed");
+  const options: DevnetPreflightOptions =
+    typeof optionsOrRpcUrl === "string"
+      ? { rpcUrl: optionsOrRpcUrl }
+      : optionsOrRpcUrl;
+
+  const rpcUrl = options.rpcUrl ?? "https://api.devnet.solana.com";
+  const connection = options.connection ?? new Connection(rpcUrl, "confirmed");
+  const programId = options.programId ?? DEVNET_PROGRAM_ID;
+  const state = { ...REFERENCE_DEVNET_STATE, ...options.state };
 
   // 1. RPC & Genesis Hash
   const genesisHash = await connection.getGenesisHash();
@@ -105,42 +132,46 @@ export async function runDevnetPreflight(
   );
 
   // 2. Program ID & Deployment
-  const programInfo = await connection.getAccountInfo(DEVNET_PROGRAM_ID);
+  const programInfo = await connection.getAccountInfo(programId);
   assert.ok(programInfo, "AgentVault program not found on Devnet");
   assert.equal(programInfo.executable, true, "Program must be executable");
 
   const idlPath = join(process.cwd(), "target/idl/agentvault.json");
   const idl = JSON.parse(readFileSync(idlPath, "utf8")) as Agentvault;
-  const program = new anchor.Program<Agentvault>(idl, { connection });
+  const program =
+    options.program ??
+    new anchor.Program<Agentvault>(idl, { connection });
 
   // 3. Vault Account
-  const vaultPubkey = new PublicKey(REFERENCE_DEVNET_STATE.vault);
+  const vaultPubkey = new PublicKey(state.vault!);
   const vault = await program.account.vault.fetch(vaultPubkey);
-  assert.equal(vault.owner.toBase58(), REFERENCE_DEVNET_STATE.owner);
-  assert.equal(vault.tokenMint.toBase58(), REFERENCE_DEVNET_STATE.mint);
-  assert.equal(vault.paused, false, "Vault is paused");
+  assert.equal(vault.owner.toBase58(), state.owner!);
+  assert.equal(vault.tokenMint.toBase58(), state.mint!);
 
   // 4. Agent Account
-  const agentPubkey = new PublicKey(REFERENCE_DEVNET_STATE.agentPda);
+  const agentPubkey = new PublicKey(state.agentPda!);
   const agent = await program.account.agent.fetch(agentPubkey);
-  assert.equal(agent.vault.toBase58(), REFERENCE_DEVNET_STATE.vault);
+  assert.equal(agent.vault.toBase58(), state.vault!);
   assert.equal(
     agent.authority.toBase58(),
-    REFERENCE_DEVNET_STATE.agentAuthority
+    state.agentAuthority!
   );
-  assert.equal(agent.active, true, "Agent is inactive");
 
   // 5. Task Account
-  const taskPubkey = new PublicKey(REFERENCE_DEVNET_STATE.taskPda);
+  const taskPubkey = new PublicKey(state.taskPda!);
   const task = await program.account.task.fetch(taskPubkey);
-  assert.equal(task.vault.toBase58(), REFERENCE_DEVNET_STATE.vault);
-  assert.equal(task.agent.toBase58(), REFERENCE_DEVNET_STATE.agentPda);
-  assert.equal(task.recipient.toBase58(), REFERENCE_DEVNET_STATE.recipient);
-  assert.equal(task.active, true, "Task is inactive");
+  assert.equal(task.vault.toBase58(), state.vault!);
+  assert.equal(task.agent.toBase58(), state.agentPda!);
+  assert.equal(task.recipient.toBase58(), state.recipient!);
 
-  const clockInfo = await connection.getAccountInfo(SYSVAR_CLOCK_PUBKEY);
-  assert.ok(clockInfo && clockInfo.data.length >= 40, "Cannot read Solana clock");
-  const chainTime = Number(clockInfo.data.readBigInt64LE(32));
+  let chainTime: number;
+  if (options.clockTimeOverride !== undefined) {
+    chainTime = options.clockTimeOverride;
+  } else {
+    const clockInfo = await connection.getAccountInfo(SYSVAR_CLOCK_PUBKEY);
+    assert.ok(clockInfo && clockInfo.data.length >= 40, "Cannot read Solana clock");
+    chainTime = Number(clockInfo.data.readBigInt64LE(32));
+  }
   const taskExpiresAt = Number(task.expiresAt);
   const expired = chainTime >= taskExpiresAt;
 
@@ -150,7 +181,7 @@ export async function runDevnetPreflight(
   const remainingBn = budgetBn.sub(spentBn);
 
   // 6. Treasury Token Account
-  const mintPubkey = new PublicKey(REFERENCE_DEVNET_STATE.mint);
+  const mintPubkey = new PublicKey(state.mint!);
   const expectedTreasury = getAssociatedTokenAddressSync(
     mintPubkey,
     vaultPubkey,
@@ -164,18 +195,14 @@ export async function runDevnetPreflight(
     "confirmed",
     TOKEN_PROGRAM_ID
   );
-  assert.equal(treasuryAccount.owner.toBase58(), REFERENCE_DEVNET_STATE.vault);
-  assert.equal(treasuryAccount.mint.toBase58(), REFERENCE_DEVNET_STATE.mint);
+  assert.equal(treasuryAccount.owner.toBase58(), state.vault!);
+  assert.equal(treasuryAccount.mint.toBase58(), state.mint!);
 
   const treasuryBalance = BigInt(treasuryAccount.amount.toString());
   const vaultTotalReserved = BigInt(vault.totalReserved.toString());
-  assert.ok(
-    treasuryBalance >= vaultTotalReserved,
-    "Treasury balance is lower than total reserved funds"
-  );
 
   // 7. Transaction Construction & Simulation (Read-only, zero private keys)
-  const recipientPubkey = new PublicKey(REFERENCE_DEVNET_STATE.recipient);
+  const recipientPubkey = new PublicKey(state.recipient!);
   const recipientAta = getAssociatedTokenAddressSync(
     mintPubkey,
     recipientPubkey,
@@ -186,7 +213,7 @@ export async function runDevnetPreflight(
 
   const instructions: TransactionInstruction[] = [
     createAssociatedTokenAccountIdempotentInstruction(
-      new PublicKey(REFERENCE_DEVNET_STATE.agentAuthority),
+      new PublicKey(state.agentAuthority!),
       recipientAta,
       recipientPubkey,
       mintPubkey,
@@ -200,7 +227,7 @@ export async function runDevnetPreflight(
   const paymentIx = await (program.methods as any)
     .executeTaskPayment(testPaymentAmount, new BN(task.nextNonce.toString()))
     .accounts({
-      agentAuthority: new PublicKey(REFERENCE_DEVNET_STATE.agentAuthority),
+      agentAuthority: new PublicKey(state.agentAuthority!),
       vault: vaultPubkey,
       agent: agentPubkey,
       task: taskPubkey,
@@ -215,7 +242,7 @@ export async function runDevnetPreflight(
 
   const { blockhash } = await connection.getLatestBlockhash("confirmed");
   const messageV0 = new TransactionMessage({
-    payerKey: new PublicKey(REFERENCE_DEVNET_STATE.agentAuthority),
+    payerKey: new PublicKey(state.agentAuthority!),
     recentBlockhash: blockhash,
     instructions,
   }).compileToV0Message();
@@ -226,6 +253,8 @@ export async function runDevnetPreflight(
   let simSuccess = false;
   let simLogs: string[] | undefined;
   let simErr: unknown = null;
+  let errorCode: number | undefined;
+  let errorName: string | undefined;
 
   try {
     const simRes = await connection.simulateTransaction(dummyVersionedTx, {
@@ -239,11 +268,55 @@ export async function runDevnetPreflight(
     simErr = (err as Error).message;
   }
 
+  if (simErr && typeof simErr === "object") {
+    const errObj = simErr as any;
+    if (errObj.InstructionError && Array.isArray(errObj.InstructionError)) {
+      const customErr = errObj.InstructionError[1];
+      if (customErr && typeof customErr === "object" && typeof customErr.Custom === "number") {
+        errorCode = customErr.Custom;
+        if (errorCode === 6012) {
+          errorName = "TaskExpired";
+        }
+      }
+    }
+  }
+
+  // Distinguish diagnostic success from payment-execution readiness
+  let acceptanceReadiness: "READY" | "BLOCKED" = "READY";
+  let blockedReason: string | undefined;
+
+  if (vault.paused) {
+    acceptanceReadiness = "BLOCKED";
+    blockedReason = "BLOCKED — VaultPaused";
+  } else if (!agent.active) {
+    acceptanceReadiness = "BLOCKED";
+    blockedReason = "BLOCKED — AgentInactive";
+  } else if (!task.active) {
+    acceptanceReadiness = "BLOCKED";
+    blockedReason = "BLOCKED — TaskInactive";
+  } else if (expired || errorCode === 6012 || errorName === "TaskExpired") {
+    acceptanceReadiness = "BLOCKED";
+    blockedReason = "BLOCKED — TaskExpired";
+  } else if (treasuryBalance < vaultTotalReserved) {
+    acceptanceReadiness = "BLOCKED";
+    blockedReason = "BLOCKED — TreasuryBalanceInsufficient";
+  } else if (simErr !== null) {
+    acceptanceReadiness = "BLOCKED";
+    blockedReason = `BLOCKED — SimulationFailed: ${JSON.stringify(simErr)}`;
+  }
+
   return {
     ok: true,
+    diagnosticOk: true,
+    acceptanceReadiness,
+    blockedReason,
     rpcAvailable: true,
     genesisHash,
     programExecutable: true,
+    clock: {
+      chainTimeUnix: chainTime,
+      chainTimeIso: new Date(chainTime * 1000).toISOString(),
+    },
     vault: {
       address: vaultPubkey.toBase58(),
       owner: vault.owner.toBase58(),
@@ -264,6 +337,7 @@ export async function runDevnetPreflight(
       remaining: remainingBn.toString(),
       nextNonce: task.nextNonce.toString(),
       expiresAtUnix: taskExpiresAt,
+      expiresAtIso: new Date(taskExpiresAt * 1000).toISOString(),
       expired,
       active: task.active,
     },
@@ -277,6 +351,8 @@ export async function runDevnetPreflight(
       success: simSuccess,
       logs: simLogs,
       err: simErr,
+      errorCode,
+      errorName,
     },
   };
 }
@@ -292,6 +368,7 @@ async function main() {
   console.log("Devnet RPC:          CONNECTED");
   console.log(`Genesis Hash:        ${result.genesisHash}`);
   console.log(`Program ID:          ${DEVNET_PROGRAM_ID.toBase58()} (EXECUTABLE)`);
+  console.log(`On-Chain Clock:      ${result.clock.chainTimeIso} (${result.clock.chainTimeUnix})`);
   console.log(`Vault PDA:           ${result.vault.address}`);
   console.log(`  Owner:             ${result.vault.owner}`);
   console.log(`  Token Mint:        ${result.vault.mint}`);
@@ -308,14 +385,26 @@ async function main() {
   console.log(`  Spent:             ${result.task.spent}`);
   console.log(`  Remaining:         ${result.task.remaining}`);
   console.log(`  Next Nonce:        ${result.task.nextNonce}`);
-  console.log(`  Expires At:        ${new Date(result.task.expiresAtUnix * 1000).toISOString()}`);
+  console.log(`  Expires At:        ${result.task.expiresAtIso}`);
+  console.log(`  Expired:           ${result.task.expired}`);
   console.log(`  Active:            ${result.task.active}`);
   console.log(`Read-Only Simulation: ${result.simulation.success ? "SUCCEEDED" : "SIMULATED (expected preflight status)"}`);
   if (result.simulation.err) {
     console.log(`  Simulation Result: ${JSON.stringify(result.simulation.err)}`);
   }
-  console.log("\nPREFLIGHT VERIFICATION: PASSED");
-  console.log("The deployed Devnet protocol is ready for controlled acceptance testing.");
+  if (result.simulation.errorName) {
+    console.log(`  Simulation Error:  ${result.simulation.errorName} (${result.simulation.errorCode})`);
+  }
+
+  console.log(`\nDIAGNOSTIC STATUS:    ${result.diagnosticOk ? "PASSED" : "FAILED"}`);
+  if (result.acceptanceReadiness === "BLOCKED") {
+    console.log(`ACCEPTANCE READINESS: ${result.blockedReason}`);
+    console.log("PAYMENT EXECUTION READINESS: BLOCKED until an active, unexpired task passes preflight.");
+  } else {
+    console.log("ACCEPTANCE READINESS: READY");
+    console.log("PREFLIGHT VERIFICATION: PASSED");
+    console.log("The deployed Devnet protocol is ready for controlled acceptance testing.");
+  }
 }
 
 if (process.argv[1] && process.argv[1].endsWith("devnet-acceptance-preflight.ts")) {
