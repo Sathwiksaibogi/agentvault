@@ -110,7 +110,7 @@ export type ModelAWorkerRecoveryRecord = {
 };
 
 export interface ModelAExecutionAdapter {
-  mode: "simulated" | "live_devnet";
+  mode: "simulated" | "preview" | "live_devnet";
   signTransaction?(
     agentAuthority: PublicKey,
     transaction: Transaction
@@ -120,6 +120,16 @@ export interface ModelAExecutionAdapter {
     signature: string,
     lastValidBlockHeight: number
   ): Promise<{ succeeded: boolean; err?: unknown }>;
+}
+
+export function isRealNetworkRpc(rpc: ModelAWorkerRpc): boolean {
+  if (rpc instanceof Connection) return true;
+  const anyRpc = rpc as any;
+  if (typeof anyRpc._rpcEndpoint === "string" && anyRpc._rpcEndpoint.length > 0) return true;
+  if (typeof anyRpc.rpcEndpoint === "string" && anyRpc.rpcEndpoint.length > 0) return true;
+  if (typeof anyRpc._rpcBatchEndpoint === "string" && anyRpc._rpcBatchEndpoint.length > 0) return true;
+  if (anyRpc._rpcClient !== undefined) return true;
+  return false;
 }
 
 export interface ModelAWorkerRpc {
@@ -941,9 +951,32 @@ export class ModelAWorker {
       assertSerializedAgentVaultPayment(prepared.transaction, expectedPayment);
       const signature = bs58.encode(prepared.transaction.signature!);
 
-      // 9. Broadcast & Confirmation (Gated again at broadcast boundary)
-      if (this.rpc.sendRawTransaction && this.rpc.confirmTransaction) {
+      // 9. Broadcast & Confirmation (Strict separation: preview, simulated, live_devnet)
+      if (this.adapter.mode === "preview") {
+        return {
+          requestId,
+          vault: this.vault,
+          agentAuthority: authority.toBase58(),
+          taskId: intent.request.taskId,
+          amountBaseUnits: intent.request.amountBaseUnits,
+          recipient: recipient.toBase58(),
+          status: "prepared",
+          signature,
+          nonce: currentNonce.toString(),
+        };
+      }
+
+      if (this.adapter.mode === "simulated") {
+        if (isRealNetworkRpc(this.rpc)) {
+          throw new LiveExecutionProhibitedError(
+            "Simulated mode cannot broadcast to a real Solana RPC network adapter"
+          );
+        }
+      } else if (this.adapter.mode === "live_devnet") {
         this.assertLiveExecutionAllowed();
+      }
+
+      if (this.rpc.sendRawTransaction && this.rpc.confirmTransaction) {
 
         const locallyPreparedSig = bs58.encode(prepared.transaction.signature!);
         const txSig = await this.rpc.sendRawTransaction(prepared.raw, {

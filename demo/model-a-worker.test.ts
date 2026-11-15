@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  Connection,
   Keypair,
   PublicKey,
   SYSVAR_CLOCK_PUBKEY,
@@ -1287,6 +1288,103 @@ test("concurrency: cross-process task lock prevents concurrent workers from nonc
       "Second process acquires lock after first releases"
     );
     lock2.release();
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("strict RPC isolation: simulated mode cannot broadcast to a real network adapter", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const realRpc = new Connection("https://api.devnet.solana.com", "confirmed");
+    let broadcastAttempted = false;
+    realRpc.sendRawTransaction = async () => {
+      broadcastAttempted = true;
+      return "unauthorized_real_broadcast";
+    };
+    realRpc.confirmTransaction = async () => ({
+      context: { slot: 100 },
+      value: { err: null, confirmationStatus: "confirmed" },
+    });
+    realRpc.simulateTransaction = async () => ({
+      value: { err: null, logs: [], unitsConsumed: 1000 },
+    });
+    realRpc.getGenesisHash = async () => GENESIS;
+    realRpc.getLatestBlockhash = async () => ({
+      blockhash: "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+      lastValidBlockHeight: 1000,
+    });
+    realRpc.getBlockHeight = async () => 500;
+    realRpc.getAccountInfo = async (addr: PublicKey) => {
+      if (addr.equals(SYSVAR_CLOCK_PUBKEY)) {
+        const buf = Buffer.alloc(40);
+        buf.writeBigInt64LE(BigInt(NOW), 32);
+        return { data: buf } as any;
+      }
+      return null;
+    };
+
+    const worker = h.createWorker({
+      rpc: realRpc,
+      adapter: { mode: "simulated" },
+    });
+
+    const { record: intent } = h.createIntent("req_strict_isolation_01");
+
+    await assert.rejects(
+      async () => worker.processPaymentIntent(intent),
+      /Simulated mode cannot broadcast to a real Solana RPC network adapter/
+    );
+
+    assert.equal(
+      broadcastAttempted,
+      false,
+      "Real network RPC sendRawTransaction must NEVER be called in simulated mode"
+    );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("preview mode: prepares transaction without signing or broadcasting", async () => {
+  const h = makeWorkerHarness();
+  try {
+    let broadcastAttempted = false;
+    const mockRpc: any = {
+      getGenesisHash: async () => GENESIS,
+      getLatestBlockhash: async () => ({
+        blockhash: "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+        lastValidBlockHeight: 1000,
+      }),
+      getBlockHeight: async () => 500,
+      getAccountInfo: async (addr: PublicKey) => {
+        if (addr.equals(SYSVAR_CLOCK_PUBKEY)) {
+          const buf = Buffer.alloc(40);
+          buf.writeBigInt64LE(BigInt(NOW), 32);
+          return { data: buf } as any;
+        }
+        return null;
+      },
+      sendRawTransaction: async () => {
+        broadcastAttempted = true;
+        return "mock_sig";
+      },
+    };
+
+    const worker = h.createWorker({
+      rpc: mockRpc,
+      adapter: { mode: "preview" },
+    });
+
+    const { record: intent } = h.createIntent("req_preview_01");
+
+    const result = await worker.processPaymentIntent(intent);
+    assert.equal(result.status, "prepared");
+    assert.equal(
+      broadcastAttempted,
+      false,
+      "Preview mode must never invoke broadcast"
+    );
   } finally {
     h.cleanup();
   }
