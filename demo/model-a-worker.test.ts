@@ -1463,3 +1463,70 @@ test("capability isolation: preview mode discards broadcaster by construction", 
     h.cleanup();
   }
 });
+
+test("single-request acceptance mode: processes only matching request and ignores unrelated requests", async () => {
+  const h = makeWorkerHarness();
+  try {
+    // Two intents in inbox: one target, one unrelated
+    h.createIntent("req_target_accept_01", { amountBaseUnits: "1000" });
+    h.createIntent("req_unrelated_other_02", { amountBaseUnits: "1000" });
+
+    const worker = h.createWorker({
+      targetRequest: {
+        requestId: "req_target_accept_01",
+        taskPda: h.taskPda.toBase58(),
+        amountBaseUnits: "1000",
+        maxExecutions: 1,
+      },
+    });
+
+    worker.start();
+    const results = await worker.processPendingIntentsOnce();
+
+    assert.equal(results.length, 1, "Must process exactly 1 matching request");
+    assert.equal(results[0].requestId, "req_target_accept_01");
+
+    // Verify journal: target is claimed, unrelated is completely untouched
+    const targetClaim = join(h.runtimeDir, "journal", "req_target_accept_01.json");
+    const unrelatedClaim = join(h.runtimeDir, "journal", "req_unrelated_other_02.json");
+    assert.ok(existsSync(targetClaim), "Target request must be claimed");
+    assert.ok(!existsSync(unrelatedClaim), "Unrelated request must NEVER be claimed");
+
+    // Worker must have stopped after maxExecutions = 1
+    assert.equal(worker.isRunning(), false, "Worker must stop after maxExecutions reached");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("graceful shutdown: stopGracefully stops timer and completes safely", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const worker = h.createWorker();
+    worker.start();
+    assert.equal(worker.isRunning(), true);
+
+    await worker.stopGracefully();
+    assert.equal(worker.isRunning(), false);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("retry prevention: cannot process already claimed or recorded intent", async () => {
+  const h = makeWorkerHarness();
+  try {
+    const intent = h.createIntent("req_no_retry_01").record;
+    const journalDir = join(h.runtimeDir, "journal");
+    mkdirSync(journalDir, { recursive: true });
+    writeFileSync(join(journalDir, "req_no_retry_01.failed.json"), "{}");
+
+    const worker = h.createWorker();
+    await assert.rejects(
+      () => worker.processPaymentIntent(intent),
+      /has already been processed or claimed in journal; retries are prohibited/
+    );
+  } finally {
+    h.cleanup();
+  }
+});

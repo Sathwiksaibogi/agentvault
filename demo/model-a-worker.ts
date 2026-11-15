@@ -277,7 +277,23 @@ export function encodeAgentPaymentDecision(d: {
   taskPda: string;
   recipient: string;
   amountBaseUnits: string;
+  expiresAtUnix?: number | string;
 }): Buffer {
+  if (d.expiresAtUnix !== undefined) {
+    return Buffer.from(
+      JSON.stringify([
+        "agentvault:agent-payment-decision:v2",
+        d.requestId,
+        d.vault,
+        d.agentAuthority,
+        d.taskPda,
+        d.recipient,
+        d.amountBaseUnits,
+        String(d.expiresAtUnix),
+      ]),
+      "utf8"
+    );
+  }
   return Buffer.from(
     JSON.stringify([
       "agentvault:agent-payment-decision:v1",
@@ -397,6 +413,13 @@ export type ModelAWorkerOptions = {
   ) => Promise<{ decision: "PAY" | "REJECT"; reason: string }>;
   pollIntervalMs?: number;
   now?: () => number;
+  targetRequest?: {
+    requestId: string;
+    taskPda: string;
+    amountBaseUnits: string;
+    maxExecutions?: number;
+  };
+  requireCryptographicSignature?: boolean;
 };
 
 export class LiveExecutionProhibitedError extends Error {
@@ -448,10 +471,14 @@ export class ModelAWorker {
   private readonly pollIntervalMs: number;
   private readonly now: () => number;
   private readonly broadcaster: ModelABroadcastCapability | null;
+  private readonly targetRequest?: ModelAWorkerOptions["targetRequest"];
+  private readonly requireCryptographicSignature: boolean;
 
   private readonly taskLocks = new TaskLock();
   private timer: NodeJS.Timeout | null = null;
   private isProcessing = false;
+  private executionCount = 0;
+  private activeProcessingPromise: Promise<WorkerExecutionResult[]> | null = null;
 
   constructor(options: ModelAWorkerOptions) {
     if (options.network !== "devnet") {
@@ -470,6 +497,9 @@ export class ModelAWorker {
     this.evaluateAi = options.evaluateAi;
     this.pollIntervalMs = options.pollIntervalMs ?? 2000;
     this.now = options.now ?? Date.now;
+    this.targetRequest = options.targetRequest;
+    this.requireCryptographicSignature =
+      options.requireCryptographicSignature ?? false;
 
     // Resolve broadcaster capability by construction based on explicit adapter mode
     if (this.adapter.mode === "preview") {
@@ -542,6 +572,31 @@ export class ModelAWorker {
     }
   }
 
+  async stopGracefully(timeoutMs = 15000): Promise<void> {
+    this.stop();
+    if (this.activeProcessingPromise) {
+      await Promise.race([
+        this.activeProcessingPromise,
+        new Promise<void>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  "Graceful shutdown timed out waiting for in-flight processing"
+                )
+              ),
+            timeoutMs
+          )
+        ),
+      ]).catch((err) => {
+        console.warn(
+          "[Worker] Warning during graceful shutdown:",
+          err instanceof Error ? err.message : err
+        );
+      });
+    }
+  }
+
   isRunning(): boolean {
     return this.timer !== null;
   }
@@ -551,8 +606,16 @@ export class ModelAWorker {
    */
   async processPendingIntentsOnce(): Promise<WorkerExecutionResult[]> {
     if (this.isProcessing) return [];
+    if (
+      this.targetRequest &&
+      this.executionCount >= (this.targetRequest.maxExecutions ?? 1)
+    ) {
+      this.stop();
+      return [];
+    }
     this.isProcessing = true;
-    try {
+
+    const work = async (): Promise<WorkerExecutionResult[]> => {
       const inboxDir = join(this.runtimeDir, "payment-intent-inbox");
       if (!existsSync(inboxDir)) return [];
 
@@ -564,6 +627,14 @@ export class ModelAWorker {
       const nowUnix = Math.floor(this.now() / 1000);
 
       for (const entry of entries) {
+        if (
+          this.targetRequest &&
+          this.executionCount >= (this.targetRequest.maxExecutions ?? 1)
+        ) {
+          this.stop();
+          break;
+        }
+
         let stored: StoredModelAPaymentIntent;
         try {
           const raw = readFileSync(join(inboxDir, entry), "utf8");
@@ -581,8 +652,23 @@ export class ModelAWorker {
           continue;
         }
 
-        const requestId = stored.request.requestId;
-        if (!REQUEST_ID_RE.test(requestId)) continue;
+        const requestId = stored.request?.requestId;
+        if (!requestId || !REQUEST_ID_RE.test(requestId)) continue;
+
+        // In single-request acceptance mode, NEVER process unrelated requests!
+        if (this.targetRequest) {
+          if (requestId !== this.targetRequest.requestId) {
+            continue;
+          }
+          if (
+            stored.request.amountBaseUnits !== this.targetRequest.amountBaseUnits
+          ) {
+            console.warn(
+              `[Worker] Skipping request ${requestId}: amount ${stored.request.amountBaseUnits} does not match target amount ${this.targetRequest.amountBaseUnits}`
+            );
+            continue;
+          }
+        }
 
         // Skip expired intents
         if (BigInt(stored.request.expiresAtUnix) <= BigInt(nowUnix)) {
@@ -601,20 +687,41 @@ export class ModelAWorker {
           continue;
         }
 
-        // Check if previously claimed or rejected
-        const claimPath = join(this.runtimeDir, "journal", `${requestId}.json`);
-        const rejectedPath = join(
-          this.runtimeDir,
-          "journal",
-          `${requestId}.rejected.json`
-        );
-        if (existsSync(claimPath) || existsSync(rejectedPath)) {
+        // Check if previously claimed, rejected, failed, or uncertain
+        const journalDir = join(this.runtimeDir, "journal");
+        const claimPath = join(journalDir, `${requestId}.json`);
+        const rejectedPath = join(journalDir, `${requestId}.rejected.json`);
+        const failedPath = join(journalDir, `${requestId}.failed.json`);
+        const confirmedPath = join(journalDir, `${requestId}.confirmed.json`);
+        const signedPath = join(journalDir, `${requestId}.signed.json`);
+        if (
+          existsSync(claimPath) ||
+          existsSync(rejectedPath) ||
+          existsSync(failedPath) ||
+          existsSync(confirmedPath) ||
+          existsSync(signedPath)
+        ) {
           continue;
         }
 
         try {
           const res = await this.processPaymentIntent(stored);
           results.push(res);
+          if (
+            res.status === "confirmed" ||
+            res.status === "finalized" ||
+            res.status === "prepared" ||
+            res.status === "simulated"
+          ) {
+            this.executionCount++;
+            if (
+              this.targetRequest &&
+              this.executionCount >= (this.targetRequest.maxExecutions ?? 1)
+            ) {
+              this.stop();
+              break;
+            }
+          }
         } catch (error) {
           console.error(
             `Failed processing payment intent ${requestId}:`,
@@ -623,8 +730,14 @@ export class ModelAWorker {
         }
       }
       return results;
+    };
+
+    this.activeProcessingPromise = work();
+    try {
+      return await this.activeProcessingPromise;
     } finally {
       this.isProcessing = false;
+      this.activeProcessingPromise = null;
     }
   }
 
@@ -644,6 +757,22 @@ export class ModelAWorker {
     // 0. Enforce live execution permission gate before claiming, signing, or preparing
     this.assertLiveExecutionAllowed();
 
+    // 0.1 In single-request acceptance mode, enforce target match strictly
+    if (this.targetRequest) {
+      if (intent.request?.requestId !== this.targetRequest.requestId) {
+        throw new Error(
+          `Target request mismatch: expected ${this.targetRequest.requestId}, got ${intent.request?.requestId}`
+        );
+      }
+      if (
+        intent.request?.amountBaseUnits !== this.targetRequest.amountBaseUnits
+      ) {
+        throw new Error(
+          `Target amount mismatch: expected ${this.targetRequest.amountBaseUnits}, got ${intent.request?.amountBaseUnits}`
+        );
+      }
+    }
+
     // 1. Validate the entire payment-intent envelope
     if (
       !intent ||
@@ -662,6 +791,26 @@ export class ModelAWorker {
     const requestId = intent.request?.requestId;
     if (!requestId || !REQUEST_ID_RE.test(requestId)) {
       throw new Error("Invalid payment intent request ID format");
+    }
+
+    // 1.1 Fail closed if request was previously claimed, rejected, failed, or uncertain in journal
+    const journalDir = join(this.runtimeDir, "journal");
+    const claimPath = join(journalDir, `${requestId}.json`);
+    const rejectedPath = join(journalDir, `${requestId}.rejected.json`);
+    const failedPath = join(journalDir, `${requestId}.failed.json`);
+    const confirmedPath = join(journalDir, `${requestId}.confirmed.json`);
+    const signedPath = join(journalDir, `${requestId}.signed.json`);
+
+    if (
+      existsSync(claimPath) ||
+      existsSync(rejectedPath) ||
+      existsSync(failedPath) ||
+      existsSync(confirmedPath) ||
+      existsSync(signedPath)
+    ) {
+      throw new Error(
+        `Payment intent ${requestId} has already been processed or claimed in journal; retries are prohibited to prevent duplicate payments`
+      );
     }
 
     const currentTrustedTime = Math.floor(this.now() / 1000);
@@ -726,6 +875,12 @@ export class ModelAWorker {
       ],
       this.program.programId
     );
+
+    if (this.targetRequest && taskPda.toBase58() !== this.targetRequest.taskPda) {
+      throw new Error(
+        `Target task PDA mismatch: expected ${this.targetRequest.taskPda}, got ${taskPda.toBase58()}`
+      );
+    }
 
     const taskLockKey = `${this.vault}:${taskPda.toBase58()}`;
     if (!this.taskLocks.acquire(taskLockKey)) {
@@ -898,12 +1053,35 @@ export class ModelAWorker {
         );
       }
 
+      if (this.requireCryptographicSignature && !candidate.signature) {
+        throw new Error(
+          "Cryptographic agent authorization signature is required for live Devnet execution; unsigned JSON or AI output alone cannot authorize payment"
+        );
+      }
+
       if (candidate.signature) {
         const sigBytes = Buffer.from(candidate.signature, "base64");
         if (sigBytes.length !== 64) {
           throw new Error("Invalid agent authorization signature format");
         }
-        const enc = encodeAgentPaymentDecision({
+        if ((candidate as any).expiresAtUnix !== undefined) {
+          if (
+            String((candidate as any).expiresAtUnix) !==
+            String(intent.request.expiresAtUnix)
+          ) {
+            throw new Error("Agent authorization decision expiry mismatch");
+          }
+        }
+        const encV2 = encodeAgentPaymentDecision({
+          requestId: candidate.requestId,
+          vault: candidate.vault,
+          agentAuthority: candidate.agentAuthority,
+          taskPda: candidate.taskPda,
+          recipient: candidate.recipient,
+          amountBaseUnits: candidate.amountBaseUnits,
+          expiresAtUnix: (candidate as any).expiresAtUnix,
+        });
+        const encV1 = encodeAgentPaymentDecision({
           requestId: candidate.requestId,
           vault: candidate.vault,
           agentAuthority: candidate.agentAuthority,
@@ -911,12 +1089,16 @@ export class ModelAWorker {
           recipient: candidate.recipient,
           amountBaseUnits: candidate.amountBaseUnits,
         });
-        const valid = nacl.sign.detached.verify(
-          enc,
+        const validV2 =
+          (candidate as any).expiresAtUnix !== undefined
+            ? nacl.sign.detached.verify(encV2, sigBytes, authority.toBytes())
+            : false;
+        const validV1 = nacl.sign.detached.verify(
+          encV1,
           sigBytes,
           authority.toBytes()
         );
-        if (!valid) {
+        if (!validV2 && !validV1) {
           throw new Error("Invalid cryptographic agent authorization signature");
         }
       }
