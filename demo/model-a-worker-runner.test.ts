@@ -363,3 +363,172 @@ test("acceptance preview: runAcceptancePreview runs read-only without private ke
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("acceptance preview: inspects acknowledged intent with cryptographic decision", async () => {
+  const root = mkdtempSync(join(tmpdir(), "av-prev-ack-test-"));
+  try {
+    const vault = "G2GY1MSTtYK2UMiEJWCDDHQPBwTHKn1b9jZvSkghn77U";
+    const agentKeypair = Keypair.generate();
+    const recipientKeypair = Keypair.generate();
+    const requestId = "req_prev_verified_01";
+    const amountBaseUnits = "1000";
+    const expiresAtUnix = 1795050000;
+    const taskPda = "83hhHmdgQG1vjYiUNtKCgyuQbC3ffWgEggp94iuvbKf1";
+
+    // 1. Stage intent in payment-intent-inbox
+    const inboxDir = join(root, "payment-intent-inbox");
+    mkdirSync(inboxDir, { recursive: true });
+    writeFileSync(
+      join(inboxDir, `${requestId}.json`),
+      JSON.stringify({
+        version: 1,
+        kind: "model-a-payment-intent",
+        status: "received",
+        network: "devnet",
+        vault,
+        principalId: "test_dev",
+        createdAtUnix: 1794760000,
+        request: {
+          requestId,
+          agentAuthority: agentKeypair.publicKey.toBase58(),
+          taskId: "3",
+          recipient: recipientKeypair.publicKey.toBase58(),
+          amountBaseUnits,
+          expiresAtUnix: String(expiresAtUnix),
+        },
+      })
+    );
+
+    // 2. Stage acknowledgment in payment-intent-acks
+    const acksDir = join(root, "payment-intent-acks");
+    mkdirSync(acksDir, { recursive: true });
+    const { createHash } = await import("node:crypto");
+    const digest = createHash("sha256")
+      .update(JSON.stringify(["devnet", vault, requestId]))
+      .digest("hex");
+    writeFileSync(
+      join(acksDir, `${digest}.json`),
+      JSON.stringify({
+        version: 1,
+        kind: "model-a-inbox-ack",
+        network: "devnet",
+        vault,
+        agentAuthority: agentKeypair.publicKey.toBase58(),
+        requestId,
+        acknowledgedAtUnix: 1794760100,
+      })
+    );
+
+    // 3. Stage signed decision in agent-decisions
+    const decisionsDir = join(root, "agent-decisions");
+    mkdirSync(decisionsDir, { recursive: true });
+    const decisionTuple = [
+      "agentvault:agent-payment-decision:v2",
+      requestId,
+      vault,
+      agentKeypair.publicKey.toBase58(),
+      taskPda,
+      recipientKeypair.publicKey.toBase58(),
+      amountBaseUnits,
+      String(expiresAtUnix),
+    ];
+    const decisionBytes = Buffer.from(JSON.stringify(decisionTuple), "utf8");
+    const signature = Buffer.from(
+      nacl.sign.detached(decisionBytes, agentKeypair.secretKey)
+    ).toString("base64");
+
+    writeFileSync(
+      join(decisionsDir, `${requestId}.json`),
+      JSON.stringify({
+        decision: "PAY",
+        requestId,
+        vault,
+        agentAuthority: agentKeypair.publicKey.toBase58(),
+        taskPda,
+        recipient: recipientKeypair.publicKey.toBase58(),
+        amountBaseUnits,
+        expiresAtUnix,
+        signature,
+      })
+    );
+
+    // Preview inspects read-only against live devnet RPC
+    await runAcceptancePreview({
+      runtimeDir: root,
+      vault,
+      rpcUrl: "https://api.devnet.solana.com",
+      targetRequest: {
+        requestId,
+        taskPda,
+        amountBaseUnits,
+        maxExecutions: 1,
+      },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("isModelAPaymentIntentAcknowledged: fails closed on missing, malformed, or wrong network records", async () => {
+  const root = mkdtempSync(join(tmpdir(), "av-ack-test-"));
+  try {
+    const vault = "G2GY1MSTtYK2UMiEJWCDDHQPBwTHKn1b9jZvSkghn77U";
+    const requestId = "req_ack_fail_closed_01";
+    const { isModelAPaymentIntentAcknowledged } = await import(
+      "./model-a-payment-intake"
+    );
+
+    // 1. Missing record returns acknowledged: false
+    const missing = isModelAPaymentIntentAcknowledged(root, "devnet", vault, requestId);
+    assert.equal(missing.acknowledged, false);
+    assert.equal(missing.record, undefined);
+
+    // 2. Wrong network fails closed
+    const wrongNet = isModelAPaymentIntentAcknowledged(root, "localnet", vault, requestId);
+    assert.equal(wrongNet.acknowledged, false);
+
+    // 3. Malformed JSON fails closed
+    const acksDir = join(root, "payment-intent-acks");
+    mkdirSync(acksDir, { recursive: true });
+    const { createHash } = await import("node:crypto");
+    const digest = createHash("sha256")
+      .update(JSON.stringify(["devnet", vault, requestId]))
+      .digest("hex");
+    writeFileSync(join(acksDir, `${digest}.json`), "NOT_VALID_JSON{{{");
+
+    const malformed = isModelAPaymentIntentAcknowledged(root, "devnet", vault, requestId);
+    assert.equal(malformed.acknowledged, false);
+
+    // 4. Corrupted/tampered fields fail closed
+    writeFileSync(
+      join(acksDir, `${digest}.json`),
+      JSON.stringify({
+        version: 1,
+        kind: "model-a-inbox-ack",
+        vault: "WrongVault1111111111111111111111111111111111",
+        requestId,
+        acknowledgedAtUnix: 1794760100,
+      })
+    );
+    const tampered = isModelAPaymentIntentAcknowledged(root, "devnet", vault, requestId);
+    assert.equal(tampered.acknowledged, false);
+
+    // 5. Valid record returns true with timestamp
+    writeFileSync(
+      join(acksDir, `${digest}.json`),
+      JSON.stringify({
+        version: 1,
+        kind: "model-a-inbox-ack",
+        vault,
+        requestId,
+        acknowledgedAtUnix: 1794760100,
+      })
+    );
+    const valid = isModelAPaymentIntentAcknowledged(root, "devnet", vault, requestId);
+    assert.equal(valid.acknowledged, true);
+    assert.equal(valid.record?.acknowledgedAtUnix, 1794760100);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+

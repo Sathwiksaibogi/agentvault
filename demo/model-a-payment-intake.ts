@@ -713,3 +713,28 @@ export function readModelAPaymentIntentAcknowledgment(args: {
 
   return { acknowledged: false };
 }
+
+/** Check whether a payment intent has been durably acknowledged by its agent. */
+export function isModelAPaymentIntentAcknowledged(
+  runtimeDir: string,
+  network: string,
+  vault: string,
+  requestId: string
+): { acknowledged: boolean; record?: { acknowledgedAtUnix: number } } {
+  if (network !== "devnet") {
+    return { acknowledged: false };
+  }
+  const ack = readModelAPaymentIntentAcknowledgment({
+    runtimeDir,
+    vault,
+    requestId,
+  });
+  return {
+    acknowledged: ack.acknowledged,
+    record:
+      ack.acknowledgedAtUnix !== undefined
+        ? { acknowledgedAtUnix: ack.acknowledgedAtUnix }
+        : undefined,
+  };
+}
+
