@@ -31,18 +31,23 @@ export const DEVNET_ACCEPTANCE_AMOUNT = "1000";
 export const DEVNET_TASK_3_EXPIRY_UNIX = 1795061262; // 2026-11-19T04:07:42.000Z
 
 export function resolveDeveloperToken(): string {
-  if (process.env.AGENTVAULT_DEVELOPER_API_TOKEN) {
-    return process.env.AGENTVAULT_DEVELOPER_API_TOKEN;
-  }
+  const token =
+    process.env.AGENTVAULT_DEVELOPER_API_KEY ||
+    process.env.AGENTVAULT_DEVELOPER_API_TOKEN;
+  if (token) return token;
+
   const cfgPath = join(homedir(), ".config/agentvault/api.env");
   if (existsSync(cfgPath)) {
     const envConfig = dotenv.parse(readFileSync(cfgPath, "utf8"));
+    if (envConfig.AGENTVAULT_DEVELOPER_API_KEY) {
+      return envConfig.AGENTVAULT_DEVELOPER_API_KEY;
+    }
     if (envConfig.AGENTVAULT_DEVELOPER_API_TOKEN) {
       return envConfig.AGENTVAULT_DEVELOPER_API_TOKEN;
     }
   }
   throw new Error(
-    "AGENTVAULT_DEVELOPER_API_TOKEN not found in environment or ~/.config/agentvault/api.env"
+    "AGENTVAULT_DEVELOPER_API_KEY or AGENTVAULT_DEVELOPER_API_TOKEN not found in environment or ~/.config/agentvault/api.env"
   );
 }
 
