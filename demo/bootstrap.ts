@@ -1,6 +1,11 @@
 import * as anchor from "@anchor-lang/core";
 import BN from "bn.js";
-import { PublicKey, SystemProgram } from "@solana/web3.js";
+import {
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  sendAndConfirmTransaction,
+} from "@solana/web3.js";
 import { RPC_URL, RUNTIME_DIR } from "./runtime-config";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -8,7 +13,8 @@ import {
   createMint,
   getAccount,
   getAssociatedTokenAddressSync,
-  getOrCreateAssociatedTokenAccount,
+  createAssociatedTokenAccountIdempotentInstruction,
+  getMint,
   mintTo,
 } from "@solana/spl-token";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -118,6 +124,95 @@ async function main() {
 
   assert.ok(mintInfo, "Saved mint does not exist. Was the validator reset?");
 
+  // Verify the controlled local-demo mint.
+  const demoMint = await getMint(
+    connection,
+    mint,
+    "confirmed",
+    TOKEN_PROGRAM_ID
+  );
+
+  assert.ok(demoMint.isInitialized, "Demo mint is not initialized");
+
+  assert.strictEqual(demoMint.decimals, 6, "Unexpected demo mint decimals");
+
+  assert.ok(
+    demoMint.mintAuthority?.equals(owner),
+    "Unexpected demo mint authority"
+  );
+
+  assert.strictEqual(
+    demoMint.freezeAuthority,
+    null,
+    "Demo mint must not have a freeze authority"
+  );
+
+  console.log("Demo mint security policy verified.");
+
+  async function ensureTokenAta(
+    tokenOwner: PublicKey,
+    allowOwnerOffCurve: boolean,
+    label: string
+  ) {
+    const ata = getAssociatedTokenAddressSync(
+      mint,
+      tokenOwner,
+      allowOwnerOffCurve,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    const existing = await connection.getAccountInfo(ata, "confirmed");
+
+    if (!existing) {
+      console.log(`Creating ${label} ATA:`, ata.toBase58());
+
+      const instruction = createAssociatedTokenAccountIdempotentInstruction(
+        payer.publicKey,
+        ata,
+        tokenOwner,
+        mint,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+
+      const signature = await sendAndConfirmTransaction(
+        connection,
+        new Transaction().add(instruction),
+        [payer],
+        {
+          commitment: "confirmed",
+          preflightCommitment: "confirmed",
+        }
+      );
+
+      console.log(`${label} ATA transaction:`, signature);
+    }
+
+    // Validate the real account, not just its address.
+    const account = await getAccount(
+      connection,
+      ata,
+      "confirmed",
+      TOKEN_PROGRAM_ID
+    );
+
+    assert.ok(
+      account.owner.equals(tokenOwner),
+      `${label}: unexpected token authority`
+    );
+
+    assert.ok(account.mint.equals(mint), `${label}: unexpected token mint`);
+
+    assert.ok(account.isInitialized, `${label}: token account not initialized`);
+
+    assert.ok(!account.isFrozen, `${label}: token account is frozen`);
+
+    console.log(`${label} ATA ready:`, ata.toBase58());
+
+    return account;
+  }
+
   // 6. Derive the deterministic Vault PDA.
   const [vaultPda] = PublicKey.findProgramAddressSync(
     [
@@ -181,43 +276,16 @@ async function main() {
   assert.ok(vault.tokenMint.equals(mint));
   assert.ok(vault.vaultId.eq(VAULT_ID));
 
-  // 10. Initialize the treasury only if absent.
-  const existingTreasury = await connection.getAccountInfo(
-    treasuryAta,
-    "processed"
+  // 10. Create or reuse the canonical treasury ATA.
+  const treasuryAccount = await ensureTokenAta(vaultPda, true, "Treasury");
+
+  assert.ok(
+    treasuryAccount.address.equals(treasuryAta),
+    "Treasury ATA address mismatch"
   );
 
-  if (!existingTreasury) {
-    const tx = await program.methods
-      .initializeTreasury()
-      .accountsPartial({
-        owner,
-        vault: vaultPda,
-        tokenMint: mint,
-        treasury: treasuryAta,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc();
-
-    console.log("Treasury initialized:", tx);
-  } else {
-    console.log("Treasury already exists — reusing.");
-  }
-
-  // 11. Create/reuse the owner's source token ATA.
-  const ownerToken = await getOrCreateAssociatedTokenAccount(
-    connection,
-    payer,
-    mint,
-    owner,
-    false,
-    "confirmed",
-    undefined,
-    TOKEN_PROGRAM_ID,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
+  // 11. Create or reuse the owner's source token ATA.
+  const ownerToken = await ensureTokenAta(owner, false, "Owner");
 
   // 12. Calculate how much funding is still needed.
   const treasuryBefore = await getAccount(

@@ -1,0 +1,396 @@
+/* Scoped, premium deposit view. Does not affect existing policy/security forms. */
+.av-console-page .av-deposit-shell {
+  padding: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  background: radial-gradient(
+      ellipse at 84% 0%,
+      rgba(248, 124, 92, 0.12),
+      transparent 45%
+    ),
+    linear-gradient(150deg, #181920, #111318);
+  color: #f8f6f8;
+  overflow: hidden;
+}
+.av-console-page .av-deposit-head {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 30px;
+}
+.av-console-page .av-deposit-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 58px;
+  height: 58px;
+  background: rgba(250, 130, 93, 0.1);
+  border: 1px solid rgba(250, 130, 93, 0.23);
+  border-radius: 17px;
+  color: #ff926f;
+}
+.av-console-page .av-deposit-head h2 {
+  font-size: 27px;
+  letter-spacing: -0.04em;
+  margin: 8px 0 !important;
+}
+.av-console-page .av-deposit-head p {
+  font-size: 13px;
+  color: #a6afbe;
+  line-height: 1.6;
+  margin: 0 !important;
+}
+.av-console-page .av-deposit-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(250px, 0.7fr);
+  gap: 20px;
+  align-items: start;
+}
+.av-console-page .av-deposit-main {
+  padding: 27px;
+  background: #11141a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 17px;
+  min-width: 0;
+}
+.av-console-page .av-deposit-step {
+  display: flex;
+  gap: 13px;
+  align-items: center;
+  color: #fe8a6c;
+  letter-spacing: 0.13em;
+  font-size: 11px;
+  font-weight: 850;
+  margin-bottom: 17px;
+}
+.av-console-page .av-deposit-step span {
+  color: #c0c5ce;
+  letter-spacing: 0.02em;
+  font-size: 12px;
+}
+.av-console-page .av-deposit-destination {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 17px;
+}
+.av-console-page .av-deposit-destination > div {
+  display: grid;
+  gap: 7px;
+  padding: 17px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: #1b1e26;
+  border-radius: 12px;
+  min-width: 0;
+}
+.av-console-page .av-deposit-destination > svg {
+  color: #f48d6d;
+  justify-self: center;
+}
+.av-console-page .av-deposit-destination span,
+.av-console-page .av-deposit-token-row span,
+.av-console-page .av-deposit-balance span,
+.av-console-page .av-deposit-explain > span {
+  font-size: 11px;
+  color: #939cab;
+}
+.av-console-page .av-deposit-destination strong,
+.av-console-page .av-deposit-token-row strong {
+  font-size: 12px;
+  font-weight: 700;
+}
+.av-console-page .av-deposit-destination code,
+.av-console-page .av-deposit-token-row code {
+  color: #d0b8ad;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.av-console-page .av-deposit-token-row {
+  display: flex;
+  gap: 28px;
+  flex-wrap: wrap;
+  padding: 15px 17px;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  background: rgba(255, 255, 255, 0.015);
+  border-radius: 11px;
+  margin-bottom: 30px;
+}
+.av-console-page .av-deposit-token-row > div {
+  display: grid;
+  gap: 7px;
+}
+.av-console-page .av-deposit-balance {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 17px;
+  background: rgba(116, 190, 155, 0.04);
+  border: 1px solid rgba(116, 190, 155, 0.14);
+  border-radius: 12px;
+  margin-bottom: 8px;
+}
+.av-console-page .av-deposit-balance > div {
+  display: grid;
+  gap: 7px;
+}
+.av-console-page .av-deposit-balance strong {
+  font-size: 20px;
+  font-weight: 750;
+}
+.av-console-page .av-deposit-balance button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  background: #282d36;
+  color: #f7f7f7;
+  padding: 10px 12px;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.av-console-page .av-deposit-source {
+  font-size: 11px;
+  color: #9199a8;
+  overflow-wrap: anywhere;
+  margin: 0 0 27px !important;
+}
+.av-console-page .av-deposit-label {
+  display: block;
+  font-size: 11px;
+  color: #bdc5d0;
+  margin-bottom: 9px;
+}
+.av-console-page .av-deposit-amount-wrap {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: #0a0d12;
+  border-radius: 11px;
+  padding: 0 14px;
+}
+.av-console-page .av-deposit-amount-wrap:focus-within {
+  border-color: #f8906c;
+  box-shadow: 0 0 0 3px rgba(248, 135, 96, 0.12);
+}
+.av-console-page .av-deposit-amount-wrap > svg {
+  color: #f08e6d;
+  flex: 0 0 auto;
+}
+.av-console-page .av-deposit-amount-wrap input {
+  flex: 1;
+  min-width: 0;
+  padding: 16px 0;
+  border: 0;
+  background: none;
+  color: #f9f6f8;
+  outline: none;
+  font-size: 18px;
+}
+.av-console-page .av-deposit-amount-wrap button {
+  border: 1px solid rgba(249, 140, 101, 0.25);
+  border-radius: 7px;
+  background: rgba(249, 140, 101, 0.11);
+  color: #f8a088;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 8px 11px;
+  cursor: pointer;
+}
+.av-console-page .av-deposit-helper {
+  font-size: 11px;
+  color: #929aa8;
+  line-height: 1.65;
+  margin: 11px 0 20px !important;
+}
+.av-console-page .av-deposit-consent {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 16px;
+  border: 1px solid rgba(248, 150, 110, 0.18);
+  border-radius: 11px;
+  background: rgba(242, 131, 92, 0.05);
+  font-size: 11px;
+  color: #d4c0b8;
+  line-height: 1.7;
+  cursor: pointer;
+  margin-bottom: 18px;
+}
+.av-console-page .av-deposit-consent input {
+  margin-top: 3px;
+  accent-color: #f68c69;
+  flex: 0 0 auto;
+}
+.av-console-page .av-deposit-submit {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  min-height: 51px;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(110deg, #ff906e, #f66b4f);
+  color: #1d1313;
+  font-size: 13px;
+  font-weight: 850;
+  cursor: pointer;
+}
+.av-console-page .av-deposit-submit:disabled,
+.av-console-page .av-deposit-balance button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.av-console-page .av-deposit-alert,
+.av-console-page .av-deposit-success {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 16px;
+  padding: 13px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.av-console-page .av-deposit-alert {
+  background: rgba(216, 69, 87, 0.085);
+  border: 1px solid rgba(237, 102, 118, 0.25);
+  color: #ffb0b7;
+}
+.av-console-page .av-deposit-success {
+  background: rgba(58, 169, 121, 0.08);
+  border: 1px solid rgba(62, 187, 135, 0.2);
+  color: #a9e1c7;
+}
+.av-console-page .av-deposit-explorer {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 13px;
+  color: #f5a587;
+  text-decoration: underline;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.av-console-page .av-deposit-explain {
+  padding: 28px;
+  border-radius: 17px;
+  border: 1px solid rgba(246, 142, 103, 0.2);
+  background: radial-gradient(
+      circle at 100% 0%,
+      rgba(243, 111, 70, 0.095),
+      transparent 50%
+    ),
+    #1c1a1f;
+}
+.av-console-page .av-deposit-explain-icon {
+  display: grid;
+  place-items: center;
+  width: 47px;
+  height: 47px;
+  border-radius: 13px;
+  background: rgba(245, 140, 101, 0.1);
+  color: #f29576;
+  margin-bottom: 16px;
+}
+.av-console-page .av-deposit-explain h3 {
+  font-size: 19px;
+  letter-spacing: -0.03em;
+  margin: 0 0 13px !important;
+}
+.av-console-page .av-deposit-explain p {
+  font-size: 12px;
+  color: #9fa5b1;
+  line-height: 1.75;
+  margin: 8px 0 15px !important;
+}
+.av-console-page .av-deposit-explain strong {
+  font-size: 12px;
+}
+.av-console-page .av-deposit-explain-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+  margin: 20px 0;
+}
+.av-console-page .av-deposit-current {
+  display: block;
+  font-size: 30px !important;
+  margin-top: 10px;
+  overflow-wrap: anywhere;
+}
+.av-console-page .av-deposit-current small {
+  display: block;
+  color: #a9a0a6;
+  font-size: 11px;
+  margin-top: 5px;
+  font-weight: 500;
+}
+.av-console-page .av-deposit-explain .av-deposit-paused {
+  color: #efbf87;
+  background: rgba(255, 160, 60, 0.07);
+  padding: 12px;
+  border-radius: 9px;
+}
+.av-console-page .av-console-quick-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.av-console-page .av-console-side-vault strong {
+  display: block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  line-height: 1.4;
+}
+@media (max-width: 1250px) {
+  .av-console-page .av-deposit-columns {
+    grid-template-columns: 1fr;
+  }
+  .av-console-page .av-deposit-explain {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 24px;
+  }
+  .av-console-page .av-deposit-explain-icon,
+  .av-console-page .av-deposit-explain h3,
+  .av-console-page .av-deposit-explain > p:first-of-type {
+    grid-column: 1/-1;
+  }
+}
+@media (max-width: 700px) {
+  .av-console-page .av-deposit-shell {
+    padding: 18px;
+  }
+  .av-console-page .av-deposit-main,
+  .av-console-page .av-deposit-explain {
+    padding: 19px;
+  }
+  .av-console-page .av-deposit-head {
+    align-items: flex-start;
+  }
+  .av-console-page .av-deposit-head h2 {
+    font-size: 22px;
+  }
+  .av-console-page .av-deposit-destination {
+    grid-template-columns: 1fr;
+  }
+  .av-console-page .av-deposit-destination > svg {
+    transform: rotate(0deg);
+  }
+  .av-console-page .av-deposit-explain {
+    display: block;
+  }
+  .av-console-page .av-console-quick-grid {
+    grid-template-columns: 1fr;
+  }
+  .av-console-page .av-deposit-balance {
+    flex-wrap: wrap;
+  }
+}

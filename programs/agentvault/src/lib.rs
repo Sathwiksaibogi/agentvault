@@ -1,6 +1,8 @@
 pub mod constants;
 pub mod error;
 pub mod instructions;
+pub mod owner_approval_verifier;
+pub mod payment_approval_v2;
 pub mod state;
 
 use anchor_lang::prelude::*;
@@ -51,5 +53,55 @@ pub mod agentvault {
 
     pub fn revoke_task(ctx: Context<RevokeTask>) -> Result<()> {
         instructions::revoke_task::handler(ctx)
+    }
+
+    pub fn set_vault_paused(ctx: Context<SetVaultPaused>, paused: bool) -> Result<()> {
+        instructions::set_vault_paused::handler(ctx, paused)
+    }
+
+    pub fn deactivate_agent(ctx: Context<DeactivateAgent>) -> Result<()> {
+        instructions::deactivate_agent::handler(ctx)
+    }
+
+    pub fn withdraw_unreserved(ctx: Context<WithdrawUnreserved>, amount: u64) -> Result<()> {
+        instructions::withdraw_unreserved::handler(ctx, amount)
+    }
+
+    pub fn create_approved_task(
+        ctx: Context<CreateApprovedTask>,
+        task_id: u64,
+        budget: u64,
+        recipient: Pubkey,
+        expires_at: i64,
+        genesis_hash: Pubkey,
+    ) -> Result<()> {
+        instructions::create_approved_task::handler(
+            ctx,
+            task_id,
+            budget,
+            recipient,
+            expires_at,
+            genesis_hash,
+        )
+    }
+
+    pub fn revoke_approved_task(ctx: Context<RevokeApprovedTask>) -> Result<()> {
+        instructions::revoke_approved_task::handler(ctx)
+    }
+
+    pub fn execute_approved_payment(
+        ctx: Context<ExecuteApprovedPayment>,
+        amount: u64,
+        nonce: u64,
+        approval_expires_at: i64,
+        request_id_hash: [u8; 32],
+    ) -> Result<()> {
+        instructions::execute_approved_payment::handler(
+            ctx,
+            amount,
+            nonce,
+            approval_expires_at,
+            request_id_hash,
+        )
     }
 }

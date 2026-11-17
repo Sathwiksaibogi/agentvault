@@ -5,3 +5,10 @@ allowBuilds:
   esbuild: true
   protobufjs: true
   utf-8-validate: false
+
+packages:
+  - "frontend"
+  - "sdk"
+
+overrides:
+  "@types/node": "24.19.2"

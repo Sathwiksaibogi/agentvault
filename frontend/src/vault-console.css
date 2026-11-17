@@ -1,0 +1,1174 @@
+/* AgentVault owner console — UI only. No signing or API logic is implemented here. */
+.av-owner-page.av-console-page {
+  width: 100%;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  min-height: calc(100vh - 78px);
+  color: #f5f3f6;
+  position: relative;
+  background: radial-gradient(
+      ellipse 65% 50% at 95% 0%,
+      rgba(254, 119, 75, 0.07),
+      transparent 65%
+    ),
+    #0a0b0f;
+}
+.av-console-page *,
+.av-console-page *::before,
+.av-console-page *::after {
+  box-sizing: border-box;
+}
+.av-console-page button {
+  font-family: inherit;
+}
+.av-console-page [hidden],
+.av-console-page .av-console-view[hidden] {
+  display: none !important;
+}
+.av-console-overline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  letter-spacing: 0.19em;
+  font-weight: 800;
+  color: #fa8b6d;
+}
+.av-console-green-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #62d5ac;
+  box-shadow: 0 0 0 4px rgba(98, 213, 172, 0.09);
+  flex: 0 0 auto;
+}
+.av-console-page h1,
+.av-console-page h2,
+.av-console-page h3 {
+  color: #f8f7fa;
+}
+.av-console-layout {
+  width: 100%;
+  max-width: 1660px;
+  min-height: calc(100vh - 78px);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 253px minmax(0, 1fr);
+}
+.av-console-sidebar {
+  position: sticky;
+  top: 78px;
+  align-self: start;
+  height: calc(100vh - 78px);
+  min-height: 680px;
+  display: flex;
+  flex-direction: column;
+  padding: 32px 13px 24px 17px;
+  border-right: 1px solid rgba(255, 255, 255, 0.075);
+  background: #0d0f15;
+}
+.av-console-side-heading {
+  padding: 0 10px 24px;
+}
+.av-console-side-kicker,
+.av-console-nav-label {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  font-weight: 800;
+  color: #777e90;
+}
+.av-console-side-heading > strong {
+  display: block;
+  font-size: 17px;
+  letter-spacing: -0.035em;
+  margin: 8px 0 22px;
+}
+.av-console-side-vault {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(
+    130deg,
+    rgba(248, 127, 88, 0.07),
+    rgba(152, 89, 199, 0.05)
+  );
+  border: 1px solid rgba(255, 255, 255, 0.095);
+  border-radius: 12px;
+  padding: 12px 9px;
+  min-width: 0;
+}
+.av-console-mini-icon {
+  width: 35px;
+  height: 35px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  flex: 0 0 auto;
+  background: rgba(250, 132, 93, 0.13);
+  color: #ff9373;
+}
+.av-console-side-vault > div {
+  flex: 1;
+  min-width: 0;
+}
+.av-console-side-vault strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 740;
+}
+.av-console-side-vault small {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #8e97a9;
+  margin-top: 3px;
+  font-size: 10px;
+}
+.av-console-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.av-console-nav-label {
+  margin: 0 12px 10px;
+}
+.av-console-page .av-console-nav-item {
+  width: 100%;
+  min-height: 59px;
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  text-align: left;
+  gap: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 10px;
+  padding: 9px 12px;
+  color: #8992a3;
+  transition: background 0.18s, border-color 0.18s, color 0.18s;
+  text-decoration: none !important;
+}
+.av-console-page .av-console-nav-item:hover {
+  background: rgba(255, 255, 255, 0.055);
+  color: #fff;
+}
+.av-console-page .av-console-nav-item.is-active {
+  background: linear-gradient(
+    100deg,
+    rgba(250, 126, 90, 0.14),
+    rgba(250, 126, 90, 0.035)
+  );
+  border-color: rgba(250, 126, 90, 0.17);
+  color: #ff9170;
+}
+.av-console-nav-item > svg:first-child {
+  flex-shrink: 0;
+}
+.av-console-nav-item span {
+  flex: 1;
+  min-width: 0;
+}
+.av-console-nav-item strong {
+  display: block;
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 700;
+  color: inherit;
+}
+.av-console-nav-item small {
+  display: block;
+  margin-top: 5px;
+  font-size: 10px;
+  line-height: 1.2;
+  color: #747d8d;
+}
+.av-console-nav-chevron {
+  flex-shrink: 0;
+}
+.av-console-side-divider {
+  margin: 16px 11px 18px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.07);
+}
+.av-console-page .av-console-nav-link {
+  color: #aeb4c2 !important;
+}
+.av-console-side-foot {
+  padding: 15px 12px 0;
+  margin-top: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.av-console-connected {
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  color: #bcc6cb;
+}
+.av-console-side-foot p {
+  color: #6e7788;
+  font-size: 10px;
+  line-height: 1.6;
+  margin: 12px 0 0;
+}
+.av-console-workspace {
+  width: 100%;
+  min-width: 0;
+  padding: 41px clamp(24px, 4.1vw, 70px) 50px;
+}
+.av-console-workspace-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 30px;
+  margin-bottom: 31px;
+}
+.av-console-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #7f8796;
+  font-size: 11px;
+  margin-bottom: 27px;
+}
+.av-console-breadcrumb strong {
+  color: #d0d1d8;
+  font-weight: 650;
+}
+.av-console-workspace-top h1 {
+  margin: 10px 0 9px;
+  font-size: clamp(32px, 3.1vw, 46px);
+  line-height: 1.1;
+  font-weight: 720;
+  letter-spacing: -0.055em;
+}
+.av-console-workspace-top p {
+  max-width: 660px;
+  font-size: 13px;
+  color: #9099aa;
+  line-height: 1.65;
+  margin: 0;
+}
+.av-console-workspace-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 2px;
+}
+.av-console-state-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 11px;
+  color: #a6d6c1;
+  background: rgba(85, 190, 139, 0.065);
+  border: 1px solid rgba(91, 197, 140, 0.12);
+  padding: 9px 12px;
+  border-radius: 8px;
+  white-space: nowrap;
+  margin-right: 5px;
+}
+.av-console-state-chip.is-paused {
+  color: #f7bb86;
+  border-color: rgba(245, 166, 80, 0.2);
+  background: rgba(245, 166, 80, 0.07);
+}
+.av-console-state-chip.is-paused .av-console-green-dot {
+  background: #e7b46c;
+}
+.av-owner-page.av-console-page .av-console-workspace-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 9px;
+  min-height: 37px;
+  padding: 8px 11px;
+  background: #171b23;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: #d8dae1;
+  font-size: 11px;
+}
+.av-owner-page.av-console-page .av-console-workspace-actions button:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.22);
+  background: #242a35;
+}
+.av-console-view {
+  animation: av-console-appear 0.23s ease both;
+}
+@keyframes av-console-appear {
+  from {
+    opacity: 0.25;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.av-console-intro {
+  min-height: 162px;
+  border: 1px solid rgba(249, 129, 93, 0.2);
+  border-radius: 17px;
+  background: radial-gradient(
+      ellipse 65% 130% at 89% 33%,
+      rgba(235, 93, 55, 0.16),
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 70% 100% at 65% 100%,
+      rgba(128, 54, 144, 0.08),
+      transparent
+    ),
+    linear-gradient(115deg, #17151a, #13151c);
+  padding: 28px 32px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  overflow: hidden;
+  position: relative;
+}
+.av-console-intro::after {
+  content: "";
+  position: absolute;
+  width: 310px;
+  height: 310px;
+  border: 1px solid rgba(255, 141, 98, 0.12);
+  border-radius: 50%;
+  right: 1%;
+  top: -190px;
+  pointer-events: none;
+  box-shadow: 0 0 0 36px rgba(255, 120, 75, 0.016),
+    0 0 0 85px rgba(255, 120, 75, 0.017);
+}
+.av-console-intro h2 {
+  font-size: clamp(38px, 4.7vw, 64px) !important;
+  letter-spacing: -0.06em !important;
+  line-height: 1.04;
+  margin: 12px 0 7px !important;
+  font-weight: 730 !important;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.av-console-intro p {
+  color: #8f96a7;
+  margin: 0;
+  font-size: 12px;
+}
+.av-console-vault-id {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 30px;
+  background: rgba(16, 18, 24, 0.6);
+  font-size: 11px;
+  color: #d6cfd1;
+  white-space: nowrap;
+}
+.av-console-vault-id svg {
+  color: #fa8769;
+}
+.av-console-id-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 100%;
+  background: #747982;
+}
+.av-console-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 13px;
+  margin-top: 15px;
+}
+.av-console-metric {
+  padding: 20px 21px;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 14px;
+  background: linear-gradient(145deg, #161920, #12151b);
+}
+.av-console-metric > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  color: #a2a8b4;
+  font-size: 12px;
+}
+.av-console-metric > div svg {
+  color: #fa8b68;
+}
+.av-console-metric > strong {
+  display: block;
+  font-size: clamp(24px, 2.9vw, 35px);
+  letter-spacing: -0.048em;
+  font-weight: 720;
+  line-height: 1.3;
+  margin: 13px 0 6px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.av-console-metric em {
+  font-size: 16px;
+  color: #81899a;
+  font-style: normal;
+  letter-spacing: 0;
+}
+.av-console-metric > small {
+  color: #7e8798;
+  font-size: 11px;
+}
+.av-console-overview-grid {
+  display: grid;
+  grid-template-columns: 1.12fr 1fr;
+  gap: 15px;
+  margin-top: 20px;
+}
+.av-console-glass {
+  border: 1px solid rgba(255, 255, 255, 0.085);
+  border-radius: 15px;
+  background: linear-gradient(150deg, #141820, #11141a);
+  padding: 25px 26px;
+  min-width: 0;
+}
+.av-console-card-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.av-console-card-head h2 {
+  font-size: 20px !important;
+  letter-spacing: -0.035em !important;
+  margin: 6px 0 0 !important;
+}
+.av-console-card-icon {
+  display: grid;
+  place-items: center;
+  color: #f68b6a;
+  background: rgba(245, 124, 91, 0.09);
+  border: 1px solid rgba(245, 124, 91, 0.14);
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+}
+.av-console-budget-values {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  margin: 35px 0 12px;
+  gap: 15px;
+  font-size: 12px;
+  color: #a2a8b5;
+}
+.av-console-budget-values strong {
+  font-size: 19px;
+  letter-spacing: -0.04em;
+  color: #f5f2f4;
+}
+.av-console-progress {
+  height: 9px;
+  border-radius: 99px;
+  background: #30323d;
+  overflow: hidden;
+}
+.av-console-progress > div {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #ff986e, #f36950, #9e66b9);
+  transition: width 0.4s ease;
+}
+.av-console-budget-split {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 15px;
+  font-size: 11px;
+  color: #9b9daa;
+}
+.av-console-legend-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  margin-right: 5px;
+}
+.av-console-legend-dot.reserved {
+  background: #ed866a;
+}
+.av-console-legend-dot.available {
+  background: #83889a;
+}
+.av-console-budget-bottom {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: #8e9e9b;
+  background: rgba(73, 191, 151, 0.035);
+  border: 1px solid rgba(73, 191, 151, 0.07);
+  padding: 12px;
+  margin-top: 29px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.av-console-budget-bottom svg {
+  color: #78cbb4;
+  flex: 0 0 auto;
+}
+.av-console-info-card dl {
+  margin: 22px 0 0;
+}
+.av-console-info-card dl > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+  padding: 12px 0;
+  font-size: 11px;
+}
+.av-console-info-card dl > div:last-child {
+  border-bottom: 0;
+}
+.av-console-info-card dt {
+  color: #8892a2;
+}
+.av-console-info-card dd {
+  color: #dfdce4;
+  margin: 0;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.av-console-actions-title {
+  margin: 31px 0 16px;
+}
+.av-console-actions-title h2 {
+  font-size: 20px !important;
+  letter-spacing: -0.035em;
+  margin: 7px 0 0 !important;
+}
+.av-console-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 13px;
+}
+.av-owner-page.av-console-page .av-console-quick-grid > button {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  text-align: left;
+  padding: 18px;
+  gap: 9px;
+  min-height: 164px;
+  background: #151920;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 13px;
+  transition: transform 0.2s, border-color 0.2s, background 0.2s;
+  color: #fff;
+}
+.av-owner-page.av-console-page .av-console-quick-grid > button:hover {
+  transform: translateY(-2px);
+  background: #1b1d26;
+  border-color: rgba(250, 138, 107, 0.35);
+}
+.av-console-quick-icon {
+  display: grid;
+  place-items: center;
+  width: 37px;
+  height: 37px;
+  border-radius: 10px;
+  background: rgba(249, 127, 85, 0.11);
+  color: #fd9276;
+}
+.av-console-quick-grid > button strong {
+  font-size: 13px;
+  font-weight: 710;
+}
+.av-console-quick-grid > button small {
+  color: #838b9a;
+  font-size: 11px;
+}
+.av-console-quick-grid > button > svg:last-child {
+  position: absolute;
+  right: 18px;
+  top: 20px;
+  color: #8c919f;
+}
+.av-console-readonly {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 15px;
+  background: rgba(133, 141, 156, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  margin-top: 20px;
+  border-radius: 10px;
+  color: #9099a6;
+  font-size: 11px;
+  line-height: 1.65;
+}
+.av-console-readonly svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: #97919f;
+}
+.av-console-readonly p {
+  margin: 0;
+}
+.av-console-section-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 17px;
+  color: #9fa5b2;
+  font-size: 12px;
+}
+.av-owner-page.av-console-page .av-console-section-meta button {
+  gap: 7px;
+}
+.av-console-agents-list {
+  display: grid;
+  gap: 14px;
+}
+.av-console-agent {
+  background: #141820;
+  border: 1px solid rgba(255, 255, 255, 0.095);
+  border-radius: 15px;
+  overflow: hidden;
+}
+.av-console-agent-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 22px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.065);
+  align-items: center;
+}
+.av-console-agent-head-main {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-width: 0;
+}
+.av-console-agent-avatar {
+  display: grid;
+  place-items: center;
+  background: rgba(246, 122, 90, 0.12);
+  color: #fa9072;
+  border-radius: 11px;
+  width: 45px;
+  height: 45px;
+  flex: 0 0 auto;
+}
+.av-console-agent-head h2 {
+  font-size: 17px !important;
+  margin: 3px 0 3px !important;
+  letter-spacing: -0.025em !important;
+}
+.av-console-agent-head small {
+  color: #818b9d;
+  font-size: 11px;
+}
+.av-console-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 20px;
+  padding: 7px 10px;
+}
+.av-console-status.good {
+  color: #89d6b2;
+  background: rgba(84, 190, 140, 0.06);
+  border-color: rgba(84, 190, 140, 0.15);
+}
+.av-console-status.off {
+  color: #c2a5a9;
+  background: rgba(190, 94, 105, 0.08);
+}
+.av-console-agent-content {
+  padding: 23px 24px;
+}
+.av-console-agent-subhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  gap: 10px;
+  font-size: 12px;
+}
+.av-console-agent-subhead span {
+  color: #969ba8;
+}
+.av-console-task {
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: #0f1218;
+  border-radius: 10px;
+  padding: 18px;
+  margin-top: 10px;
+}
+.av-console-task-head,
+.av-console-task-money,
+.av-console-task-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.av-console-task-head strong {
+  font-size: 13px;
+}
+.av-console-task-money {
+  margin: 17px 0 11px;
+  color: #929aa9;
+  font-size: 12px;
+}
+.av-console-task-money strong {
+  color: #f5f2f6;
+  font-size: 19px;
+  margin-left: 5px;
+  letter-spacing: -0.035em;
+}
+.av-console-task-progress {
+  height: 6px;
+}
+.av-console-task-meta {
+  margin-top: 11px;
+  font-size: 10px;
+  color: #80899a;
+}
+.av-console-task-recipient {
+  margin-top: 15px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.055);
+  font-size: 11px;
+  color: #8993a5;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.av-console-task-recipient code {
+  color: #e3c4b8;
+}
+.av-console-no-tasks {
+  color: #969ead;
+  font-size: 12px;
+}
+.av-console-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  background: #141820;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 55px 20px;
+  color: #989fae;
+}
+.av-console-empty svg {
+  color: #f49171;
+}
+.av-console-empty h2 {
+  margin: 16px 0 6px !important;
+}
+.av-console-empty p {
+  max-width: 400px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.av-console-view-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  border: 1px solid rgba(107, 143, 221, 0.13);
+  background: linear-gradient(
+    110deg,
+    rgba(75, 98, 178, 0.09),
+    rgba(40, 44, 66, 0.05)
+  );
+  border-radius: 12px;
+  padding: 19px 20px;
+  margin-bottom: 19px;
+}
+.av-console-view-callout > svg {
+  color: #f39375;
+  flex: 0 0 auto;
+}
+.av-console-view-callout strong {
+  display: block;
+  font-size: 13px;
+}
+.av-console-view-callout p {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #929bab;
+}
+.av-console-view-callout.warning {
+  border-color: rgba(246, 159, 96, 0.22);
+  background: rgba(246, 159, 96, 0.045);
+}
+.av-console-form-view .av-owner-surface {
+  margin-top: 14px !important;
+}
+.av-console-form-view .av-owner-surface h2 {
+  font-size: 23px !important;
+}
+.av-console-footer {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 22px 0 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  color: #6f7786;
+  font-size: 10px;
+  margin-top: 38px;
+}
+.av-console-footer svg {
+  color: #8c8d96;
+  flex: 0 0 auto;
+}
+.av-console-top-alert,
+.av-console-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: #ffb5b1 !important;
+  background: rgba(192, 65, 76, 0.085);
+  border: 1px solid rgba(255, 119, 120, 0.23);
+  padding: 13px 15px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0 0 18px;
+}
+.av-console-alert svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.av-console-loading {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #151820;
+  border-radius: 12px;
+  color: #a4adbb;
+  font-size: 13px;
+  padding: 26px;
+  margin-bottom: 15px;
+}
+/* Owner sign-in: only rendered when the validated session is not yet active. */
+.av-console-auth-shell {
+  min-height: calc(100vh - 78px);
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  align-items: center;
+  gap: clamp(40px, 5vw, 90px);
+  padding: 70px max(30px, calc((100vw - 1300px) / 2));
+  background: radial-gradient(
+      ellipse at 80% 50%,
+      rgba(229, 91, 64, 0.14),
+      transparent 40%
+    ),
+    radial-gradient(
+      ellipse at 60% 100%,
+      rgba(118, 60, 142, 0.08),
+      transparent 43%
+    );
+}
+.av-console-auth-copy h1 {
+  font-size: clamp(58px, 7vw, 98px) !important;
+  line-height: 1.02 !important;
+  font-weight: 750 !important;
+  letter-spacing: -0.075em !important;
+  margin: 26px 0 !important;
+}
+.av-console-auth-copy h1 span {
+  color: #fc8162;
+}
+.av-console-auth-copy > p {
+  color: #9aa2b1;
+  font-size: 17px;
+  line-height: 1.75;
+  max-width: 610px;
+}
+.av-console-auth-features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px 22px;
+  margin-top: 45px;
+  color: #b4b6bf;
+  font-size: 12px;
+}
+.av-console-auth-features span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.av-console-auth-features svg {
+  color: #f48b71;
+}
+.av-console-auth-card {
+  background: linear-gradient(155deg, #19191f, #12151d);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 34px;
+  border-radius: 20px;
+  box-shadow: 0 40px 100px rgba(0, 0, 0, 0.19);
+}
+.av-console-iconbox {
+  background: rgba(253, 128, 92, 0.12);
+  border: 1px solid rgba(253, 128, 92, 0.15);
+  color: #fb8a69;
+  width: 52px;
+  height: 52px;
+  border-radius: 13px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 32px;
+}
+.av-console-auth-card h2 {
+  font-size: 30px !important;
+  letter-spacing: -0.05em !important;
+  margin: 10px 0 !important;
+}
+.av-console-auth-card > p {
+  color: #999eae;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.av-console-auth-address {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.095);
+  padding: 15px;
+  margin: 26px 0 17px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+.av-console-auth-address span {
+  color: #8e96a6;
+}
+.av-console-auth-address code {
+  font-size: 11px;
+  color: #f4c6b9;
+  overflow-wrap: anywhere;
+}
+.av-owner-page.av-console-page .av-console-signin {
+  width: 100%;
+  min-height: 48px;
+  background: #f78260;
+  color: #0b0b0f;
+  border-color: transparent;
+  justify-content: center;
+  gap: 12px;
+  font-size: 13px;
+}
+.av-owner-page.av-console-page .av-console-signin:hover {
+  background: #ff9a7a;
+  border-color: transparent;
+  color: #09090b;
+}
+.av-console-signin svg:last-child {
+  margin-left: auto;
+}
+.av-console-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 22px !important;
+  font-size: 11px !important;
+  color: #b1b5c1 !important;
+}
+.av-console-devnet-note {
+  margin-top: 22px !important;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 10px !important;
+  color: #70798a !important;
+}
+.av-console-status-text {
+  font-size: 12px;
+  color: #a5adba;
+}
+@media (max-width: 1300px) {
+  .av-console-workspace {
+    padding: 32px 28px 40px;
+  }
+  .av-console-workspace-top {
+    flex-direction: column;
+    gap: 20px;
+  }
+  .av-console-workspace-actions {
+    justify-content: flex-start;
+  }
+  .av-console-breadcrumb {
+    margin-bottom: 20px;
+  }
+}
+@media (max-width: 1050px) {
+  .av-console-layout {
+    grid-template-columns: 215px minmax(0, 1fr);
+  }
+  .av-console-sidebar {
+    padding-left: 9px;
+    padding-right: 9px;
+  }
+  .av-console-overview-grid {
+    grid-template-columns: 1fr;
+  }
+  .av-console-quick-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .av-console-metrics {
+    gap: 9px;
+  }
+  .av-console-metric {
+    padding: 17px 14px;
+  }
+}
+@media (max-width: 790px) {
+  .av-console-layout {
+    display: block;
+  }
+  .av-console-sidebar {
+    position: static;
+    min-height: 0;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 16px 16px 13px;
+    background: #0d0f15;
+  }
+  .av-console-side-heading {
+    display: none;
+  }
+  .av-console-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 6px;
+    scrollbar-width: thin;
+    scrollbar-color: #45404a transparent;
+  }
+  .av-console-nav-label,
+  .av-console-side-divider,
+  .av-console-side-foot,
+  .av-console-nav-link {
+    display: none !important;
+  }
+  .av-owner-page.av-console-page .av-console-nav-item {
+    min-width: max-content;
+    width: auto;
+    min-height: 42px;
+    padding: 9px 12px;
+    gap: 7px;
+  }
+  .av-console-nav-item small,
+  .av-console-nav-chevron {
+    display: none !important;
+  }
+  .av-console-nav-item strong {
+    font-size: 11px;
+  }
+  .av-console-nav-item > svg:first-child {
+    width: 16px;
+    height: 16px;
+  }
+  .av-console-workspace {
+    padding: 28px 21px 48px;
+  }
+  .av-console-auth-shell {
+    grid-template-columns: 1fr;
+    gap: 35px;
+  }
+  .av-console-auth-copy h1 {
+    font-size: clamp(52px, 9vw, 84px) !important;
+  }
+  .av-console-auth-features {
+    margin-top: 25px;
+  }
+}
+@media (max-width: 560px) {
+  .av-console-workspace {
+    padding: 23px 16px 40px;
+  }
+  .av-console-metrics,
+  .av-console-quick-grid {
+    grid-template-columns: 1fr;
+  }
+  .av-console-overview-grid {
+    grid-template-columns: 1fr;
+  }
+  .av-console-intro {
+    padding: 23px;
+    min-height: 145px;
+    display: block;
+  }
+  .av-console-vault-id {
+    margin-top: 20px;
+  }
+  .av-console-glass {
+    padding: 20px;
+  }
+  .av-console-workspace-top h1 {
+    font-size: 34px;
+  }
+  .av-console-workspace-actions {
+    width: 100%;
+  }
+  .av-console-state-chip {
+    margin-right: auto;
+  }
+  .av-owner-page.av-console-page .av-console-workspace-actions button span {
+    display: none;
+  }
+  .av-console-agent-head {
+    padding: 16px;
+  }
+  .av-console-agent-content {
+    padding: 16px;
+  }
+  .av-console-task {
+    padding: 14px;
+  }
+  .av-console-auth-shell {
+    padding: 35px 19px 60px;
+  }
+  .av-console-auth-card {
+    padding: 24px;
+  }
+  .av-console-auth-features {
+    gap: 14px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .av-console-view {
+    animation: none;
+  }
+  .av-console-page * {
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
+}

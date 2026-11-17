@@ -48,6 +48,11 @@ function readClaim(
     readFileSync(claimPath, "utf8")
   ) as RequestJournalRecord;
 
+  assert.equal(
+    claim.version,
+    1,
+    "Model B claims cannot use Model A payment persistence"
+  );
   assert.equal(claim.status, "claimed");
   assert.equal(claim.requestId, requestId);
 

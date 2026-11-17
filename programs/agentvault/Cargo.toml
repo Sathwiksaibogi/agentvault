@@ -26,6 +26,8 @@ custom-panic = []
 [dependencies]
 anchor-lang = "1.2.0"
 anchor-spl = { version = "1.2.0", features = ["token", "associated_token"] }
+solana-instructions-sysvar = "=3.0.1"
+solana-sdk-ids = "=3.1.0"
 
 
 [lints.rust]

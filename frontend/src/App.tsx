@@ -10,9 +10,11 @@ import {
   ShieldCheck,
   Wallet,
   Workflow,
+  ArrowRight,
 } from "lucide-react";
 
 import { loadDashboard, type DashboardData, type WorkflowStatus } from "./api";
+import { BrandLockup } from "./Brand";
 
 function formatAmount(amount: string, decimals: number): string {
   const value = BigInt(amount);
@@ -132,61 +134,37 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand">
-          <div className="brand-icon">
-            <ShieldCheck size={24} />
-          </div>
-          <div>
-            <strong>AgentVault</strong>
-            <span>Autonomous Finance Infrastructure</span>
-          </div>
-        </div>
-
+        <a className="brand av-brand-anchor" href="/" aria-label="AgentVault home">
+          <BrandLockup subtitle />
+        </a>
+        <nav className="av-dashboard-nav" aria-label="Dashboard sections">
+          <a className="av-dashboard-nav-active" href="#overview">Overview</a>
+          <a href="#agents">Agents</a>
+          <a href="#approvals">Approvals</a>
+          <a href="#activity">Activity</a>
+        </nav>
         <div className="header-actions">
-          <span className="network-pill">
-            <span className="network-dot" />
-            Solana Devnet
-          </span>
-
-          <button
-            className="refresh-button"
-            onClick={() => void refresh()}
-            disabled={loading}
-          >
-            <RefreshCw size={16} />
-            {loading ? "Loading..." : "Refresh"}
+          <span className="network-pill"><span className="network-dot" /> Solana Devnet</span>
+          <a className="av-nav-vault" href="/onboarding">Your vaults <ArrowRight size={14} /></a>
+          <button className="refresh-button" type="button" onClick={() => void refresh()} disabled={loading}>
+            <RefreshCw size={16} /> {loading ? "Loading..." : "Refresh"}
           </button>
         </div>
       </header>
 
       <main className="main-content">
-        <section className="hero">
-          <div className="eyebrow">
-            <LockKeyhole size={15} />
-            OWNER-CONTROLLED · MULTI-AGENT TREASURY
-          </div>
-
-          <h1>
-            Secure spending for
-            <span> autonomous agents.</span>
-          </h1>
-
-          <p>
-            Monitor your shared treasury, independent AI agents, spending
-            policies, owner approvals, and on-chain activity from one place.
-          </p>
-
-          <div className="hero-footer">
-            <span className="read-only-pill">
-              <ShieldCheck size={15} />
-              Read-only dashboard
-            </span>
-
-            {updatedAt && (
-              <span className="muted-text">
-                Updated {updatedAt.toLocaleTimeString()}
-              </span>
-            )}
+        <section className="hero" id="overview">
+          <div className="av-dashboard-hero-heading">
+            <div>
+              <div className="eyebrow"><LockKeyhole size={14} /> AGENTVAULT CONTROL CENTER / DEVNET</div>
+              <h1>Treasury <span>overview.</span></h1>
+              <p>Live read-only visibility into your shared treasury, registered agents, scoped task budgets and workflow status.</p>
+              <div className="hero-footer">
+                <span className="read-only-pill"><ShieldCheck size={15} /> Read-only demo dashboard</span>
+                {updatedAt && <span className="muted-text">Updated {updatedAt.toLocaleTimeString()}</span>}
+              </div>
+            </div>
+            <div className="av-dashboard-hero-graphic" aria-hidden="true"><div className="av-dashboard-hero-ring"><ShieldCheck size={38} strokeWidth={1.1}/></div><span>ON-CHAIN POLICY</span></div>
           </div>
         </section>
 
@@ -241,7 +219,7 @@ export default function App() {
               </div>
             </section>
 
-            <section className="section">
+            <section className="section" id="agents">
               <div className="section-heading">
                 <div>
                   <div className="section-eyebrow">ACCESS CONTROL</div>
@@ -339,7 +317,7 @@ export default function App() {
               </div>
             </section>
 
-            <section className="section">
+            <section className="section" id="approvals">
               <div className="section-heading">
                 <div>
                   <div className="section-eyebrow">AUTHORIZATION</div>
@@ -499,7 +477,7 @@ export default function App() {
               </div>
             </section>
 
-            <section className="section">
+            <section className="section" id="activity">
               <div className="section-heading">
                 <div>
                   <div className="section-eyebrow">SOLANA DEVNET</div>

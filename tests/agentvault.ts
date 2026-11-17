@@ -4863,7 +4863,7 @@ describe("AgentVault - Vault Initialization", () => {
 
   it("rejects payments after a task has expired", async function () {
     // This test waits for the validator's on-chain clock.
-    this.timeout(60_000);
+    this.timeout(120_000);
 
     // STEP 1: Read the actual Solana Clock sysvar.
     const readChainTime = async (): Promise<number> => {
@@ -4889,7 +4889,7 @@ describe("AgentVault - Vault Initialization", () => {
     const chainNow = await readChainTime();
 
     // Give the task time to initialize successfully.
-    const expiresAt = new BN(chainNow + 60);
+    const expiresAt = new BN(chainNow + 20);
 
     // Reuse the existing approved recipient and its ATA.
     const recipient = taskA1Recipient;
@@ -4974,58 +4974,53 @@ describe("AgentVault - Vault Initialization", () => {
 
     assert.ok(vaultAfterCreation.totalReserved.eq(new BN(220_000)));
 
-    // STEP 9: Advance Surfpool's clock beyond task expiry.
-const latestChainTime = await readChainTime();
 
-const targetUnixTime =
-  Math.max(expiresAt.toNumber(), latestChainTime) + 5;
+    // STEP 9: Wait until the validator's actual on-chain
+// Clock sysvar advances beyond the task expiration.
+//
+// This works with standard solana-test-validator and
+// does not rely on Surfpool-specific RPC methods.
 
-const response = await fetch(provider.connection.rpcEndpoint, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({
-    jsonrpc: "2.0",
-    id: 1,
-    method: "surfnet_timeTravel",
-    params: [
-      {
-        absoluteTimestamp: targetUnixTime * 1000,
-      },
-    ],
-  }),
-});
+const expiryTimestamp = expiresAt.toNumber();
 
-assert.ok(response.ok, "Surfpool RPC request failed");
+// Allow an additional 2-second margin so the payment
+// transaction definitely executes after expiry.
+const targetChainTime = expiryTimestamp + 2;
 
-const payload = (await response.json()) as {
-  result?: {
-    absoluteSlot: number;
-    blockHeight: number;
-  };
-  error?: {
-    code: number;
-    message: string;
-  };
-};
+// Bound the wait so a stalled validator fails clearly.
+const deadline = Date.now() + 75_000;
 
+let currentChainTime = await readChainTime();
+
+while (currentChainTime < targetChainTime) {
+  if (Date.now() >= deadline) {
+    assert.fail(
+      `Validator clock failed to reach task expiry. ` +
+      `Current: ${currentChainTime}, ` +
+      `Target: ${targetChainTime}`
+    );
+  }
+
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 500);
+  });
+
+  currentChainTime = await readChainTime();
+}
+
+// Verify the actual on-chain Clock, not wall-clock time.
 assert.ok(
-  !payload.error,
-  `Surfpool time travel failed: ${payload.error?.message ?? "Unknown error"}`
+  currentChainTime > expiryTimestamp,
+  `Task must be expired. ` +
+  `Chain time: ${currentChainTime}, ` +
+  `Expiry: ${expiryTimestamp}`
 );
 
-// Verify the actual Clock sysvar, not just the RPC response.
-const currentChainTime = await readChainTime();
+console.log("Task expiry:", expiryTimestamp);
+console.log("On-chain time after expiry:", currentChainTime);
+console.log("Expiry verification successful");
 
-assert.ok(
-  currentChainTime >= expiresAt.toNumber(),
-  `Expected chain time ${currentChainTime} to reach expiry ${expiresAt.toNumber()}`
-);
 
-console.log("Task expiry:", expiresAt.toString());
-console.log("On-chain time after time travel:", currentChainTime);
-console.log("Surfpool slot:", payload.result?.absoluteSlot);
 
     // STEP 10: Snapshot balances after the task expires.
     const treasuryBefore = await getAccount(

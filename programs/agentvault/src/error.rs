@@ -46,4 +46,19 @@ pub enum ErrorCode {
 
     #[msg("Payment exceeds the remaining task budget")]
     TaskBudgetExceeded,
+
+    #[msg("Withdrawal amount must be greater than zero")]
+    InvalidWithdrawalAmount,
+
+    #[msg("Treasury balance is lower than active reservations")]
+    TreasuryBelowReserved,
+
+    #[msg("Invalid owner approval chain scope")]
+    InvalidApprovalScope,
+
+    #[msg("Missing preceding Ed25519 owner approval")]
+    MissingOwnerApproval,
+
+    #[msg("Invalid Ed25519 owner approval")]
+    InvalidOwnerApproval,
 }

@@ -1,0 +1,333 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { Buffer } from "buffer";
+import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import { DEFAULT_PROGRAM_ID, TOKEN_PROGRAM_ID, deriveTreasury } from "../src/onboarding";
+import {
+  buildCreateTaskInstruction,
+  buildRegisterAgentInstruction,
+  deriveAgentPda,
+  deriveTaskPda,
+  parseExpiryHours,
+  parseTokenAmount,
+  parseU64Id,
+} from "../src/owner-management";
+
+test("exact decimal token budgets preserve fractional base units without rounding", () => {
+  assert.equal(parseTokenAmount("0.01", 6), BigInt(10_000));
+  assert.equal(parseTokenAmount("1.000001", 6), BigInt(1_000_001));
+  assert.equal(parseTokenAmount("9007199254.740993", 6), BigInt("9007199254740993"));
+  assert.throws(() => parseTokenAmount("0.0000001", 6));
+  assert.throws(() => parseTokenAmount("1e3", 6));
+  assert.throws(() => parseTokenAmount("-1", 6));
+  assert.throws(() => parseTokenAmount("0", 6));
+  assert.throws(() => parseTokenAmount("01", 6));
+});
+
+test("registration instruction uses exact discriminator and owner/agent PDA", () => {
+  const owner = Keypair.generate().publicKey;
+  const vault = Keypair.generate().publicKey;
+  const authority = Keypair.generate().publicKey;
+  const { agent, instruction } = buildRegisterAgentInstruction({ owner, vault, authority });
+  const expected = PublicKey.findProgramAddressSync([
+    Buffer.from("agent"), vault.toBuffer(), authority.toBuffer(),
+  ], DEFAULT_PROGRAM_ID)[0];
+  assert.equal(agent.toBase58(), expected.toBase58());
+  assert.equal(agent.toBase58(), deriveAgentPda(vault, authority).toBase58());
+  assert.deepEqual([...instruction.data.subarray(0, 8)], [135, 157, 66, 195, 2, 113, 175, 30]);
+  assert.equal(new PublicKey(instruction.data.subarray(8, 40)).toBase58(), authority.toBase58());
+  assert.deepEqual(instruction.keys.map((entry) => entry.pubkey.toBase58()), [
+    owner.toBase58(), vault.toBase58(), agent.toBase58(), SystemProgram.programId.toBase58(),
+  ]);
+  assert.deepEqual(instruction.keys.map((entry) => [entry.isSigner, entry.isWritable]), [
+    [true, true], [false, true], [false, true], [false, false],
+  ]);
+});
+
+test("task instruction matches deployed IDL order, seeds and exact borsh args", () => {
+  const owner = Keypair.generate().publicKey;
+  const vault = Keypair.generate().publicKey;
+  const authority = Keypair.generate().publicKey;
+  const agent = deriveAgentPda(vault, authority);
+  const mint = Keypair.generate().publicKey;
+  const recipient = Keypair.generate().publicKey;
+  const taskId = BigInt(12345);
+  const budget = BigInt(250001);
+  const expiresAt = BigInt(1793437557);
+  const { task, instruction } = buildCreateTaskInstruction({
+    owner, vault, agent, mint, recipient, taskId, budget, expiresAt,
+  });
+  assert.equal(task.toBase58(), deriveTaskPda(agent, taskId).toBase58());
+  assert.deepEqual([...instruction.data.subarray(0, 8)], [194, 80, 6, 180, 232, 127, 48, 171]);
+  assert.equal(instruction.data.length, 64);
+  assert.equal(instruction.data.readBigUInt64LE(8), taskId);
+  assert.equal(instruction.data.readBigUInt64LE(16), budget);
+  assert.equal(new PublicKey(instruction.data.subarray(24, 56)).toBase58(), recipient.toBase58());
+  assert.equal(instruction.data.readBigInt64LE(56), expiresAt);
+  assert.deepEqual(instruction.keys.map((entry) => entry.pubkey.toBase58()), [
+    owner.toBase58(), vault.toBase58(), agent.toBase58(), mint.toBase58(),
+    deriveTreasury(vault, mint).toBase58(), task.toBase58(),
+    TOKEN_PROGRAM_ID.toBase58(), SystemProgram.programId.toBase58(),
+  ]);
+  assert.deepEqual(instruction.keys.map((entry) => [entry.isSigner, entry.isWritable]), [
+    [true, true], [false, true], [false, false], [false, false],
+    [false, false], [false, true], [false, false], [false, false],
+  ]);
+});
+
+test("u64 identifiers and task expiries reject invalid representations", () => {
+  assert.equal(parseU64Id("18446744073709551615"), (BigInt(1) << BigInt(64)) - BigInt(1));
+  assert.throws(() => parseU64Id("18446744073709551616"));
+  assert.throws(() => parseU64Id("1.0"));
+  assert.throws(() => parseU64Id("-1"));
+  assert.equal(parseExpiryHours("24", 1_000_000), BigInt(86_400 + 1000));
+  assert.throws(() => parseExpiryHours("0"));
+  assert.throws(() => parseExpiryHours("-2"));
+  assert.throws(() => parseExpiryHours("1.5"));
+});
+
+test("task budget and expiry bounds fail closed before transaction creation", () => {
+  const owner = Keypair.generate().publicKey;
+  const vault = Keypair.generate().publicKey;
+  const agent = Keypair.generate().publicKey;
+  const mint = Keypair.generate().publicKey;
+  const recipient = Keypair.generate().publicKey;
+  const fixed = { owner, vault, agent, mint, recipient, taskId: BigInt(1), expiresAt: BigInt(1) };
+  assert.throws(() => buildCreateTaskInstruction({ ...fixed, budget: BigInt(0) }));
+  assert.throws(() => buildCreateTaskInstruction({ ...fixed, budget: BigInt(1) << BigInt(64) }));
+  assert.throws(() => buildCreateTaskInstruction({ ...fixed, budget: BigInt(1), expiresAt: BigInt(0) }));
+});
+
+test("owner management refuses a mismatched wallet before any RPC call or transaction", async () => {
+  const { registerOwnerAgent } = await import("../src/owner-management");
+  const owner = Keypair.generate().publicKey;
+  const other = Keypair.generate().publicKey;
+  const vault = Keypair.generate().publicKey;
+  let sent = false;
+  const wallet = {
+    publicKey: other,
+    async connect() { return { publicKey: other }; },
+    async signAndSendTransaction() { sent = true; return { signature: "not-expected" }; },
+  };
+  const snapshot = {
+    network: "devnet" as const, owner: owner.toBase58(), vault: vault.toBase58(),
+    vaultId: "8001", tokenMint: Keypair.generate().publicKey.toBase58(),
+    treasury: Keypair.generate().publicKey.toBase58(), decimals: 6, paused: false,
+    availableBaseUnits: "1000000",
+  };
+  await assert.rejects(() => registerOwnerAgent({
+    wallet, snapshot, sessionOwner: snapshot.owner, authority: other.toBase58(),
+  }), /Connected wallet and authenticated owner/);
+  assert.equal(sent, false);
+});
+
+
+test("agent PDA cannot be registered as its own signing authority", async () => {
+  const { registerOwnerAgent } = await import("../src/owner-management");
+  const owner = Keypair.generate().publicKey;
+  const vault = Keypair.generate().publicKey;
+  const offCurve = deriveAgentPda(vault, Keypair.generate().publicKey);
+  assert.equal(PublicKey.isOnCurve(offCurve.toBytes()), false);
+  assert.throws(
+    () => buildRegisterAgentInstruction({ owner, vault, authority: offCurve }),
+    /signing-wallet public key, not a PDA/
+  );
+  const wallet = {
+    publicKey: owner,
+    async connect() { return { publicKey: owner }; },
+    async signAndSendTransaction() { throw new Error("Should not prompt Phantom"); },
+  };
+  const snapshot = {
+    network: "devnet" as const, owner: owner.toBase58(), vault: vault.toBase58(),
+    vaultId: "8001", tokenMint: Keypair.generate().publicKey.toBase58(),
+    treasury: Keypair.generate().publicKey.toBase58(), decimals: 6, paused: false,
+    availableBaseUnits: "1000000",
+  };
+  await assert.rejects(
+    () => registerOwnerAgent({
+      wallet, snapshot, sessionOwner: snapshot.owner, authority: offCurve.toBase58(),
+    }),
+    /signing-wallet public key, not a PDA/
+  );
+});
+
+
+test("sign-only owner management broadcasts through Devnet RPC, never Phantom", async () => {
+  const { signAndBroadcastThroughDevnet } = await import("../src/owner-management");
+  const owner = Keypair.generate();
+  let calls = 0;
+  const unsigned = new (await import("@solana/web3.js")).Transaction({
+    feePayer: owner.publicKey,
+    recentBlockhash: Keypair.generate().publicKey.toBase58(),
+  }).add(SystemProgram.transfer({
+    fromPubkey: owner.publicKey,
+    toPubkey: Keypair.generate().publicKey,
+    lamports: 1,
+  }));
+  const wallet = {
+    publicKey: owner.publicKey,
+    async connect() { return { publicKey: owner.publicKey }; },
+    async signAndSendTransaction() { throw new Error("Phantom broadcast must never be used"); },
+    async signTransaction(tx: typeof unsigned) { tx.sign(owner); return tx; },
+  };
+  const connection = {
+    async sendRawTransaction(
+      raw: Buffer | Uint8Array | number[],
+      options?: import("@solana/web3.js").SendOptions
+    ) {
+      calls += 1;
+      assert.ok(raw.length > 64);
+      assert.deepEqual(options, {
+        preflightCommitment: "confirmed", skipPreflight: false, maxRetries: 3,
+      });
+      return "devnet-sent";
+    },
+  };
+  assert.equal(await signAndBroadcastThroughDevnet(connection, wallet, unsigned), "devnet-sent");
+  assert.equal(calls, 1);
+});
+
+test("sign-only flow rejects a wallet-modified message before broadcast", async () => {
+  const { signAndBroadcastThroughDevnet } = await import("../src/owner-management");
+  const { Transaction } = await import("@solana/web3.js");
+  const owner = Keypair.generate();
+  const unsigned = new Transaction({
+    feePayer: owner.publicKey,
+    recentBlockhash: Keypair.generate().publicKey.toBase58(),
+  }).add(SystemProgram.transfer({
+    fromPubkey: owner.publicKey,
+    toPubkey: Keypair.generate().publicKey,
+    lamports: 1,
+  }));
+  const wallet = {
+    publicKey: owner.publicKey,
+    async connect() { return { publicKey: owner.publicKey }; },
+    async signAndSendTransaction() { throw new Error("Unexpected broadcast"); },
+    async signTransaction(tx: Transaction) {
+      tx.recentBlockhash = Keypair.generate().publicKey.toBase58();
+      tx.sign(owner);
+      return tx;
+    },
+  };
+  let sent = false;
+  const connection = { async sendRawTransaction() { sent = true; return "bad"; } };
+  await assert.rejects(
+    () => signAndBroadcastThroughDevnet(connection, wallet, unsigned),
+    /modified transaction/
+  );
+  assert.equal(sent, false);
+});
+
+
+test("wallet changes to a signed instruction are identified and never broadcast", async () => {
+  const { signAndBroadcastThroughDevnet } = await import("../src/owner-management");
+  const { Transaction } = await import("@solana/web3.js");
+  const owner = Keypair.generate();
+  const unsigned = new Transaction({
+    feePayer: owner.publicKey,
+    recentBlockhash: Keypair.generate().publicKey.toBase58(),
+  }).add(SystemProgram.transfer({
+    fromPubkey: owner.publicKey,
+    toPubkey: Keypair.generate().publicKey,
+    lamports: 1,
+  }));
+  let broadcast = false;
+  await assert.rejects(
+    () => signAndBroadcastThroughDevnet(
+      { async sendRawTransaction() { broadcast = true; return "unexpected"; } },
+      {
+        publicKey: owner.publicKey,
+        async connect() { return { publicKey: owner.publicKey }; },
+        async signAndSendTransaction() { throw new Error("wallet-side send disallowed"); },
+        async signTransaction(tx: Transaction) {
+          tx.instructions[0].data = Buffer.from([1, 2, 3]);
+          tx.sign(owner);
+          return tx;
+        },
+      },
+      unsigned,
+    ),
+    /modified transaction \(instruction 0 data\); nothing was broadcast/
+  );
+  assert.equal(broadcast, false);
+});
+
+test("wallet changes to the blockhash are identified and never broadcast", async () => {
+  const { signAndBroadcastThroughDevnet } = await import("../src/owner-management");
+  const { Transaction } = await import("@solana/web3.js");
+  const owner = Keypair.generate();
+  const unsigned = new Transaction({
+    feePayer: owner.publicKey,
+    recentBlockhash: Keypair.generate().publicKey.toBase58(),
+  }).add(SystemProgram.transfer({
+    fromPubkey: owner.publicKey,
+    toPubkey: Keypair.generate().publicKey,
+    lamports: 1,
+  }));
+  let broadcast = false;
+  await assert.rejects(
+    () => signAndBroadcastThroughDevnet(
+      { async sendRawTransaction() { broadcast = true; return "unexpected"; } },
+      {
+        publicKey: owner.publicKey,
+        async connect() { return { publicKey: owner.publicKey }; },
+        async signAndSendTransaction() { throw new Error("wallet-side send disallowed"); },
+        async signTransaction(tx: Transaction) {
+          tx.recentBlockhash = Keypair.generate().publicKey.toBase58();
+          tx.sign(owner);
+          return tx;
+        },
+      },
+      unsigned,
+    ),
+    /modified transaction \(recent blockhash\); nothing was broadcast/
+  );
+  assert.equal(broadcast, false);
+});
+
+
+test("Devnet owner policy transaction includes priority fee before Phantom signing", async () => {
+  const { ComputeBudgetProgram, Transaction } = await import("@solana/web3.js");
+  const { buildOwnerPolicyTransaction, signAndBroadcastThroughDevnet } = await import("../src/owner-management");
+  const owner = Keypair.generate();
+  const { instruction } = buildRegisterAgentInstruction({
+    owner: owner.publicKey,
+    vault: Keypair.generate().publicKey,
+    authority: Keypair.generate().publicKey,
+  });
+  const blockhash = Keypair.generate().publicKey.toBase58();
+  const unsigned = buildOwnerPolicyTransaction(owner.publicKey, blockhash, instruction);
+  assert.equal(unsigned.instructions.length, 3);
+  assert.deepEqual(unsigned.instructions.map(ix => ix.programId.toBase58()), [
+    ComputeBudgetProgram.programId.toBase58(),
+    ComputeBudgetProgram.programId.toBase58(),
+    DEFAULT_PROGRAM_ID.toBase58(),
+  ]);
+  assert.equal(unsigned.instructions[0].data.readUInt8(0), 2); // SetComputeUnitLimit
+  assert.equal(unsigned.instructions[0].data.readUInt32LE(1), 200_000);
+  assert.equal(unsigned.instructions[1].data.readUInt8(0), 3); // SetComputeUnitPrice
+  assert.equal(unsigned.instructions[1].data.readBigUInt64LE(1), BigInt(1_000));
+  const expectedMessage = Buffer.from(unsigned.serializeMessage());
+  let broadcasts = 0;
+  const wallet = {
+    publicKey: owner.publicKey,
+    async connect() { return { publicKey: owner.publicKey }; },
+    async signAndSendTransaction() { throw new Error("Wallet must not broadcast"); },
+    async signTransaction(tx: import("@solana/web3.js").Transaction) {
+      // Simulates a wallet that leaves explicitly pre-priced transactions alone.
+      assert.equal(tx.instructions.length, 3);
+      tx.sign(owner);
+      return tx;
+    },
+  };
+  const connection = {
+    async sendRawTransaction(raw: Buffer | Uint8Array | number[]) {
+      broadcasts += 1;
+      const decoded = Transaction.from(Buffer.from(raw));
+      assert.ok(Buffer.from(decoded.serializeMessage()).equals(expectedMessage));
+      return "devnet-confirmation-is-separate";
+    },
+  };
+  assert.equal(await signAndBroadcastThroughDevnet(connection, wallet, unsigned), "devnet-confirmation-is-separate");
+  assert.equal(broadcasts, 1);
+});

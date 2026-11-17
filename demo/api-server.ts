@@ -1,10 +1,35 @@
 import * as anchor from "@anchor-lang/core";
 import BN from "bn.js";
+import dotenv from "dotenv";
+import { homedir } from "node:os";
 import { strict as assert } from "node:assert";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer } from "node:http";
+
+dotenv.config();
+if (!process.env.AGENTVAULT_DATABASE_URL) {
+  const cfgPath = join(homedir(), ".config/agentvault/api.env");
+  if (existsSync(cfgPath)) {
+    dotenv.config({ path: cfgPath });
+  }
+}
+import { createApiHandler } from "./api-handler";
+import { createModelAPaymentHttpHandler } from "./model-a-payment-http";
+import { createModelAAgentInboxHttpHandler } from "./model-a-agent-inbox";
+import { verifyModelAPaymentIntentPolicy } from "./model-a-payment-policy";
+import { createOwnerDashboardSessionHandler } from "./owner-dashboard-session";
+import { createSelectedVaultSessionHandler } from "./selected-vault-dashboard-session";
+import { projectVerifiedVaultAgentsAndTasks } from "./selected-vault-agent-reader";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createBoundedRpcFetch } from "./api-rpc-security";
+import { configureApiHttpServer } from "./api-http-security";
+import { createApiReadCache } from "./api-read-cache";
+import { mapWithConcurrency } from "./api-concurrency";
+import { createRpcConcurrencyGate } from "./api-rpc-concurrency";
 
+import { createApiDatabase, verifyApiDatabase } from "./api-database";
+
+import { verifySavedPaymentIntegrity } from "./saved-payment-integrity";
 import { Connection, PublicKey } from "@solana/web3.js";
 
 import { getAccount, getMint, TOKEN_PROGRAM_ID } from "@solana/spl-token";
@@ -24,7 +49,7 @@ import {
   type ApprovalScope,
 } from "./signed-workflow";
 
-import { loadPreparedPayment } from "./prepared-payment";
+import { loadApiCredentials } from "./api-auth";
 
 import { classifyPayment } from "./payment-recovery-state";
 type DemoState = {
@@ -39,6 +64,8 @@ type DemoState = {
 
 const PORT = 8787;
 const HOST = "127.0.0.1";
+
+const API_CREDENTIALS = loadApiCredentials(process.env);
 
 const DEMO_AGENTS = [
   {
@@ -57,15 +84,37 @@ const DEMO_AGENTS = [
   },
 ] as const;
 
-const state = JSON.parse(
-  readFileSync(join(RUNTIME_DIR, "state.json"), "utf8")
-) as DemoState;
+const statePath = join(RUNTIME_DIR, "state.json");
+const state: DemoState = existsSync(statePath)
+  ? JSON.parse(readFileSync(statePath, "utf8"))
+  : {
+      genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+      programId: "BVhTPuAK9birmLeYBeAuBMusEdYW9oFjQeJeMU9hNX9d",
+      vault: "G2GY1MSTtYK2UMiEJWCDDHQPBwTHKn1b9jZvSkghn77U",
+      owner: "CMbQSedspHrgqKEhUpYrxiaZkoseWcuEMWoLb4Ah7Wc",
+      mint: "EwgEeTw1XurM1FuUDKDNwss7T4Qc4sDgzBupAFYMoP9x",
+      treasury: "9jf3fXNboToPTNqMpA5wxHiBTF442kRLF7dFYiasQucr",
+      vaultId: "8001",
+    };
 
 const idl = JSON.parse(
   readFileSync(join(process.cwd(), "target/idl/agentvault.json"), "utf8")
 ) as Agentvault;
 
-const connection = new Connection(RPC_URL, "confirmed");
+const rpcConcurrencyGate = createRpcConcurrencyGate({
+  maxActive: 8,
+  maxQueued: 32,
+  queueTimeoutMs: 5_000,
+});
+
+const boundedRpcFetch = createBoundedRpcFetch(fetch);
+
+const connection = new Connection(RPC_URL, {
+  commitment: "confirmed",
+  fetch: (input, init) =>
+    rpcConcurrencyGate.run(() => boundedRpcFetch(input, init), init?.signal),
+  disableRetryOnRateLimit: true,
+});
 
 const program = new anchor.Program<Agentvault>(idl, {
   connection,
@@ -73,59 +122,7 @@ const program = new anchor.Program<Agentvault>(idl, {
 
 assert.equal(program.programId.toBase58(), state.programId);
 
-function sendJson(response: ServerResponse, status: number, data: unknown) {
-  response.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
-
-  response.end(JSON.stringify(data));
-}
-
-type CacheEntry = {
-  value: unknown;
-  expiresAt: number;
-};
-
-const readCache = new Map<string, CacheEntry>();
-const pendingReads = new Map<string, Promise<unknown>>();
-
-async function cachedRead<T>(
-  key: string,
-  loader: () => Promise<T>,
-  ttlMs = 30_000
-): Promise<T> {
-  const cached = readCache.get(key);
-
-  if (cached && Date.now() < cached.expiresAt) {
-    return cached.value as T;
-  }
-
-  const pending = pendingReads.get(key);
-
-  if (pending) {
-    return pending as Promise<T>;
-  }
-
-  const job = (async () => {
-    try {
-      const value = await loader();
-
-      readCache.set(key, {
-        value,
-        expiresAt: Date.now() + ttlMs,
-      });
-
-      return value;
-    } finally {
-      pendingReads.delete(key);
-    }
-  })();
-
-  pendingReads.set(key, job);
-
-  return job;
-}
+const { cachedRead } = createApiReadCache();
 
 async function getTreasuryData() {
   const vaultPda = new PublicKey(state.vault);
@@ -345,37 +342,37 @@ async function getWorkflowData(requestId: string) {
   } | null = null;
 
   if (signedTransactionExists) {
-    // This verifies the journal binding, serialized
-    // transaction digest, and Solana signature.
-    const prepared = loadPreparedPayment(RUNTIME_DIR, requestId);
-
-    const { record, transaction } = prepared;
-
-    assert.equal(record.network, NETWORK);
-    assert.equal(record.agentAuthority, workflow.agentAuthority);
-    assert.equal(record.agent, workflow.assignedAgent);
-    assert.equal(record.amountBaseUnits, workflow.amountBaseUnits);
-
-    assert.ok(transaction.signature);
-
-    const signature = bs58.encode(transaction.signature);
+    const verified = await verifySavedPaymentIntegrity(
+      RUNTIME_DIR,
+      requestId,
+      {
+        network: NETWORK,
+        genesisHash: state.genesisHash,
+        programId: state.programId,
+        vault: state.vault,
+        owner: state.owner,
+        mint: state.mint,
+        treasury: state.treasury,
+      },
+      program
+    );
 
     const [response, blockHeight] = await Promise.all([
-      connection.getSignatureStatuses([signature], {
+      connection.getSignatureStatuses([verified.signature], {
         searchTransactionHistory: true,
       }),
       connection.getBlockHeight("confirmed"),
     ]);
 
     payment = {
-      signature,
+      signature: verified.signature,
       recoveryState: classifyPayment(
         response.value[0],
         blockHeight,
-        record.lastValidBlockHeight
+        verified.lastValidBlockHeight
       ),
-      amountBaseUnits: record.amountBaseUnits,
-      nonce: record.nonce,
+      amountBaseUnits: verified.amountBaseUnits,
+      nonce: verified.nonce,
     };
   }
 
@@ -416,32 +413,29 @@ async function getActivityData() {
   // Reuse our verified on-chain agent reader.
   const { agents } = await cachedRead("agents", getAgentsData, 30_000);
 
-  const pages = await Promise.all(
-    agents.map(async (agent) => {
-      const taskPda = new PublicKey(agent.task.taskPda);
+  const pages = await mapWithConcurrency(agents, 4, async (agent) => {
+    const taskPda = new PublicKey(agent.task.taskPda);
 
-      // Read confirmed transactions referencing this task.
-      const signatures = await connection.getSignaturesForAddress(
-        taskPda,
-        { limit: 12 },
-        "confirmed"
-      );
+    // Read confirmed transactions referencing this task.
+    const signatures = await connection.getSignaturesForAddress(
+      taskPda,
+      { limit: 12 },
+      "confirmed"
+    );
 
-      return signatures.map((entry) => ({
-        signature: entry.signature,
-        slot: entry.slot,
-        blockTimeUnix: entry.blockTime,
-        agentId: agent.id,
-        workflow: agent.workflow,
-        taskId: agent.task.taskId,
-        taskPda: agent.task.taskPda,
-        succeeded: entry.err === null,
-        explorerUrl:
-          `https://explorer.solana.com/tx/` +
-          `${entry.signature}?cluster=devnet`,
-      }));
-    })
-  );
+    return signatures.map((entry) => ({
+      signature: entry.signature,
+      slot: entry.slot,
+      blockTimeUnix: entry.blockTime,
+      agentId: agent.id,
+      workflow: agent.workflow,
+      taskId: agent.task.taskId,
+      taskPda: agent.task.taskPda,
+      succeeded: entry.err === null,
+      explorerUrl:
+        `https://explorer.solana.com/tx/` + `${entry.signature}?cluster=devnet`,
+    }));
+  });
 
   const activity = pages
     .flat()
@@ -454,139 +448,246 @@ async function getActivityData() {
   };
 }
 
-const server = createServer(async (request, response) => {
-  if (request.method !== "GET") {
-    sendJson(response, 405, {
-      error: "Method not allowed",
-    });
-    return;
-  }
+async function main(): Promise<void> {
+  const database = createApiDatabase(process.env);
 
-  const pathname = new URL(request.url ?? "/", `http://${HOST}:${PORT}`)
-    .pathname;
+  try {
+    // Do not accept requests until PostgreSQL is reachable.
+    await verifyApiDatabase(database);
 
-  if (pathname === "/health") {
-    sendJson(response, 200, {
-      service: "agentvault-api",
+    const apiHandler = createApiHandler({
       network: NETWORK,
-      mode: "read-only",
-      status: "running",
+      runtimeVault: state.vault,
+      credentials: API_CREDENTIALS,
+
+      lookupDeveloperKey: (keyId) => database.repository.findById(keyId),
+      managementRepository: database.repository,
+
+      readers: {
+        getTreasuryData,
+        getAgentsData,
+        getWorkflowIds,
+        getWorkflowData,
+        getActivityData,
+      },
+
+      cachedRead,
     });
-    return;
-  }
-
-  if (pathname === "/api/treasury") {
-    try {
-      const result = await cachedRead("treasury", getTreasuryData, 30_000);
-      sendJson(response, 200, result);
-    } catch (error) {
-      console.error(
-        "Treasury read failed:",
-        error instanceof Error ? error.message : error
-      );
-
-      sendJson(response, 503, {
-        error: "Treasury data temporarily unavailable",
-      });
-    }
-
-    return;
-  }
-
-  if (pathname === "/api/agents") {
-    try {
-      const result = await cachedRead("agents", getAgentsData, 30_000);
-
-      sendJson(response, 200, result);
-    } catch (error) {
-      console.error(
-        "Agent read failed:",
-        error instanceof Error ? error.message : error
-      );
-
-      sendJson(response, 503, {
-        error: "Agent data temporarily unavailable",
-      });
-    }
-
-    return;
-  }
-
-  if (pathname === "/api/workflows") {
-    sendJson(response, 200, {
+    const legacyDashboardHandler = createOwnerDashboardSessionHandler({
+      apiHandler,
+      ownerPublicKey: state.owner,
+      vaultPublicKey: state.vault,
+      ownerApiToken: API_CREDENTIALS.ownerToken,
+      frontendOrigin: "http://127.0.0.1:5173",
+      upstreamOrigin: `http://${HOST}:${PORT}`,
+    });
+    const selectedDashboardHandler = createSelectedVaultSessionHandler({
+      fallbackHandler: legacyDashboardHandler,
+      rpc: connection,
       network: NETWORK,
-      requestIds: getWorkflowIds(),
+      expectedGenesisHash: state.genesisHash,
+      frontendOrigin: "http://127.0.0.1:5173",
+      runtimeDir: RUNTIME_DIR,
+      developerKeyRepository: database.repository,
+      readScopedAgents: async (verified) => {
+        // Anchor .all() returns only program-owned, discriminator-decoded
+        // accounts of the requested type. Never read demo agent definitions.
+        const [agentAccounts, taskAccounts] = await Promise.all([
+          program.account.agent.all(),
+          program.account.task.all(),
+        ]);
+        return projectVerifiedVaultAgentsAndTasks({
+          verified,
+          agentAccounts,
+          taskAccounts,
+        });
+      },
+      readScopedActivity: async (verified) => {
+        const [agentAccounts, taskAccounts] = await Promise.all([
+          program.account.agent.all(),
+          program.account.task.all(),
+        ]);
+        const inventory = projectVerifiedVaultAgentsAndTasks({
+          verified,
+          agentAccounts,
+          taskAccounts,
+        });
+        const taskPdas = inventory.agents.flatMap((agent) =>
+          agent.tasks.map((task) => ({
+            agentId: agent.authority.slice(0, 8),
+            workflow: "task",
+            taskId: Number(task.taskId),
+            taskPda: new PublicKey(task.taskPda),
+          }))
+        );
+        const pages = await mapWithConcurrency(
+          taskPdas,
+          4,
+          async (taskInfo) => {
+            const signatures = await connection.getSignaturesForAddress(
+              taskInfo.taskPda,
+              { limit: 12 },
+              "confirmed"
+            );
+            return signatures.map((entry) => ({
+              signature: entry.signature,
+              slot: entry.slot,
+              blockTimeUnix: entry.blockTime,
+              agentId: taskInfo.agentId,
+              workflow: taskInfo.workflow,
+              taskId: taskInfo.taskId,
+              taskPda: taskInfo.taskPda.toBase58(),
+              succeeded: entry.err === null,
+              explorerUrl: `https://explorer.solana.com/tx/${entry.signature}?cluster=devnet`,
+            }));
+          }
+        );
+        const activity = pages
+          .flat()
+          .sort((a, b) => b.slot - a.slot)
+          .slice(0, 20);
+        return {
+          network: "devnet" as const,
+          vault: verified.vault,
+          activity,
+        };
+      },
     });
+    const server = createServer(
+      createModelAAgentInboxHttpHandler({
+        fallbackHandler: createModelAPaymentHttpHandler({
+          fallbackHandler: selectedDashboardHandler,
+          lookupDeveloperKey: (keyId) => database.repository.findById(keyId),
+          network: NETWORK,
+          runtimeDir: RUNTIME_DIR,
+          expectedGenesisHash: state.genesisHash,
+          getGenesisHash: () => connection.getGenesisHash(),
+          checkPolicy: async ({ trustedScope, input }) => {
+            await verifyModelAPaymentIntentPolicy({
+              rpc: connection,
+              accounts: {
+                fetchAgent: (address) =>
+                  program.account.agent.fetch(address, "confirmed"),
+                fetchTask: (address) =>
+                  program.account.task.fetch(address, "confirmed"),
+              },
+              expectedDevnetGenesisHash: state.genesisHash,
+              trustedScope,
+              input,
+            });
+          },
+        }),
+        network: NETWORK,
+        runtimeDir: RUNTIME_DIR,
+        expectedGenesisHash: state.genesisHash,
+        getGenesisHash: () => connection.getGenesisHash(),
+        verifyAgent: async ({ vault, agentAuthority }) => {
+          const vaultKey = new PublicKey(vault);
+          const authorityKey = new PublicKey(agentAuthority);
+          const [agentPda] = PublicKey.findProgramAddressSync(
+            [
+              Buffer.from("agent"),
+              vaultKey.toBuffer(),
+              authorityKey.toBuffer(),
+            ],
+            new PublicKey(state.programId)
+          );
+          const vaultInfo = await connection.getAccountInfo(
+            vaultKey,
+            "confirmed"
+          );
+          if (
+            !vaultInfo ||
+            !vaultInfo.owner.equals(new PublicKey(state.programId)) ||
+            vaultInfo.data.length !== 90 ||
+            vaultInfo.data[88] !== 0
+          )
+            throw new Error("Vault unavailable or paused");
+          const agent = await program.account.agent.fetch(
+            agentPda,
+            "confirmed"
+          );
+          if (
+            !agent.active ||
+            !agent.vault.equals(vaultKey) ||
+            !agent.authority.equals(authorityKey)
+          )
+            throw new Error("Agent not active in selected vault");
+        },
+      })
+    );
+    configureApiHttpServer(server);
 
-    return;
+    let shuttingDown = false;
+
+    const shutdown = (signal: string): void => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+
+      // Reject waiting RPC work and prevent new RPC operations.
+      // Already-active RPC operations retain their transport deadline.
+      rpcConcurrencyGate.close(new Error("API server shutting down"));
+
+      console.log(`Received ${signal}; shutting down API`);
+
+      void (async () => {
+        try {
+          await new Promise<void>((resolve, reject) => {
+            server.close((error) => {
+              if (error) {
+                reject(error);
+              } else {
+                resolve();
+              }
+            });
+
+            server.closeIdleConnections();
+          });
+        } catch (error) {
+          console.error("HTTP shutdown failed:", error);
+          process.exitCode = 1;
+        } finally {
+          try {
+            await database.pool.end();
+          } catch (error) {
+            console.error("PostgreSQL shutdown failed:", error);
+            process.exitCode = 1;
+          }
+        }
+      })();
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+
+      server.listen(PORT, HOST, () => {
+        server.off("error", reject);
+
+        process.once("SIGINT", () => shutdown("SIGINT"));
+        process.once("SIGTERM", () => shutdown("SIGTERM"));
+
+        console.log("\n=== AGENTVAULT BACKEND API ===");
+        console.log("Network:", NETWORK);
+        console.log("Mode: READ ONLY");
+        console.log("PostgreSQL authentication: enabled");
+        console.log(`Health: http://${HOST}:${PORT}/health`);
+        console.log(`Treasury: http://${HOST}:${PORT}/api/treasury`);
+        console.log("No signing or Gemini endpoints exposed.");
+
+        resolve();
+      });
+    });
+  } catch (error) {
+    await database.pool.end();
+    throw error;
   }
+}
 
-  const workflowMatch = pathname.match(
-    /^\/api\/workflows\/([a-zA-Z0-9_-]{8,64})$/
+void main().catch((error) => {
+  console.error(
+    "AgentVault API startup failed:",
+    error instanceof Error ? error.message : error
   );
 
-  if (workflowMatch) {
-    try {
-      const requestId = workflowMatch[1];
-
-      const result = await cachedRead(
-        `workflow:${requestId}`,
-        () => getWorkflowData(requestId),
-        15_000
-      );
-
-      if (result === null) {
-        sendJson(response, 404, {
-          error: "Workflow not found",
-        });
-
-        return;
-      }
-
-      sendJson(response, 200, result);
-    } catch (error) {
-      console.error(
-        "Workflow status failed:",
-        error instanceof Error ? error.message : error
-      );
-
-      sendJson(response, 503, {
-        error: "Workflow status temporarily unavailable",
-      });
-    }
-
-    return;
-  }
-
-  if (pathname === "/api/activity") {
-    try {
-      const result = await cachedRead("activity", getActivityData, 60_000);
-
-      sendJson(response, 200, result);
-    } catch (error) {
-      console.error(
-        "Activity read failed:",
-        error instanceof Error ? error.message : error
-      );
-
-      sendJson(response, 503, {
-        error: "Activity data temporarily unavailable",
-      });
-    }
-
-    return;
-  }
-
-  sendJson(response, 404, {
-    error: "Endpoint not found",
-  });
-});
-
-server.listen(PORT, HOST, () => {
-  console.log("\n=== AGENTVAULT BACKEND API ===");
-  console.log("Network:", NETWORK);
-  console.log("Mode: READ ONLY");
-  console.log(`Health: http://${HOST}:${PORT}/health`);
-  console.log(`Treasury: http://${HOST}:${PORT}/api/treasury`);
-  console.log("No signing or Gemini endpoints exposed.");
+  process.exitCode = 1;
 });
