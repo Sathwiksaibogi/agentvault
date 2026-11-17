@@ -139,7 +139,7 @@ export async function signAgentPaymentDecision(options?: {
     console.log(`Derived Task PDA:  ${decisionRecord.taskPda}`);
     console.log(`Recipient:         ${decisionRecord.recipient}`);
     console.log(`Amount:            ${decisionRecord.amountBaseUnits} base units`);
-    console.log(`Expires At:        ${new Date(decisionRecord.expiresAtUnix! * 1000).toISOString()}`);
+    console.log(`Expires At:        ${new Date(Number(decisionRecord.expiresAtUnix) * 1000).toISOString()}`);
     console.log(`Canonical Domain:  agentvault:agent-payment-decision:v2`);
     console.log(`Canonical Bytes:   ${canonicalBytes.length} bytes`);
     return decisionRecord;

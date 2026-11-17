@@ -216,7 +216,7 @@ export async function createConfiguredWorker(
     network: "devnet",
     expectedGenesisHash: actualGenesis,
     vault: cfg.vault,
-    rpc: connection as unknown as ModelAWorkerRpc,
+    rpc: connection as any,
     program,
     adapter,
     agentSigner: cfg.agentSigner,

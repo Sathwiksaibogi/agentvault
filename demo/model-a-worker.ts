@@ -79,6 +79,7 @@ export type ModelAWorkerExecutionStatus =
   | "simulated"
   | "prepared"
   | "confirmed"
+  | "finalized"
   | "failed_on_chain"
   | "rejected"
   | "skipped";
@@ -260,7 +261,7 @@ export type AuthenticatedAgentPaymentDecision = {
   taskPda: string;
   recipient: string;
   amountBaseUnits: string;
-  reason: string;
+  reason?: string;
   signature?: string;
   expiresAtUnix?: number | string;
   authorizedAtUnix?: number;

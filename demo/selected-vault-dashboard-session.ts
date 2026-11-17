@@ -39,15 +39,16 @@ import {
   type VerifiedOwnerVault,
 } from "./owner-vault-verifier";
 import type { SelectedVaultAgentsResponse } from "./selected-vault-agent-reader";
-export type { PaymentApprovalV2 } from "./payment-approval-v2";
-export type { WorkflowApprovalV2 } from "./signed-workflow-v2";
 import {
   paymentApprovalV2Schema,
   verifyPaymentApprovalV2,
+  type PaymentApprovalV2,
 } from "./payment-approval-v2";
 import {
   verifyWorkflowApprovalV2,
+  type WorkflowApprovalV2,
 } from "./signed-workflow-v2";
+export type { PaymentApprovalV2, WorkflowApprovalV2 };
 
 const idlPath = join(process.cwd(), "target/idl/agentvault.json");
 const agentVaultIdl = JSON.parse(readFileSync(idlPath, "utf8"));
