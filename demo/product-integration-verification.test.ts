@@ -310,7 +310,7 @@ test("Product Integration: full end-to-end flow with running server, SDK, Agent 
           tasks: [
             {
               taskPda: taskPda.toBase58(),
-              taskId: 1,
+              taskId: "1",
               recipient: recipientKeypair.publicKey.toBase58(),
               budgetBaseUnits: "100000",
               spentBaseUnits: "0",
@@ -332,14 +332,7 @@ test("Product Integration: full end-to-end flow with running server, SDK, Agent 
     runtimeDir,
     expectedGenesisHash: GENESIS,
     getGenesisHash: async () => GENESIS,
-    checkPolicy: async () => ({
-      ok: true,
-      agentPda,
-      taskPda,
-      expectedRecipient: recipientKeypair.publicKey,
-      remainingBaseUnits: new BN(100000),
-      nextNonce: new BN(0),
-    }),
+    checkPolicy: async () => {},
   });
 
   const inboxHttpHandler = createModelAAgentInboxHttpHandler({

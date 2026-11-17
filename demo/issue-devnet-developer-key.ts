@@ -44,7 +44,18 @@ async function main(): Promise<void> {
     const expiresAt = now + 23 * 3600 * 1000; // 23 hours from now
 
     const issued = await issueDeveloperApiKey({
-      issuer: { role: "owner", vaults: [DEVNET_ACCEPTANCE_VAULT] },
+      issuer: {
+        principalId: "acceptance-owner",
+        role: "owner",
+        vaults: [DEVNET_ACCEPTANCE_VAULT],
+        scopes: [
+          "treasury:read",
+          "agents:read",
+          "workflows:read",
+          "activity:read",
+          "payments:request",
+        ],
+      },
       principalId: "acceptance-developer-01",
       vault: DEVNET_ACCEPTANCE_VAULT,
       scopes: ["payments:request"],

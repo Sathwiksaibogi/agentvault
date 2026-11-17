@@ -262,6 +262,8 @@ export type AuthenticatedAgentPaymentDecision = {
   amountBaseUnits: string;
   reason: string;
   signature?: string;
+  expiresAtUnix?: number | string;
+  authorizedAtUnix?: number;
 };
 
 export type AgentAuthorizationContext = {
@@ -709,7 +711,6 @@ export class ModelAWorker {
           results.push(res);
           if (
             res.status === "confirmed" ||
-            res.status === "finalized" ||
             res.status === "prepared" ||
             res.status === "simulated"
           ) {

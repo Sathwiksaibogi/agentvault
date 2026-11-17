@@ -146,7 +146,16 @@ export default function SelectedVaultPaymentApprovalPanel({
   }, []);
 
   useEffect(() => {
-    void loadApprovals();
+    let ignore = false;
+    const timer = setTimeout(() => {
+      if (!ignore) {
+        void loadApprovals();
+      }
+    }, 0);
+    return () => {
+      ignore = true;
+      clearTimeout(timer);
+    };
   }, [loadApprovals]);
 
   const choices = useMemo(

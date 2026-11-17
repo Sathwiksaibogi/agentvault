@@ -484,7 +484,6 @@ async function setupE2EHarness(): Promise<E2EHarness> {
       }
       if (!input || typeof input !== "object") throw new Error("Invalid input");
     },
-    now: () => NOW * 1000,
   });
 
   const inboxHttpHandler = createModelAAgentInboxHttpHandler({
@@ -493,7 +492,6 @@ async function setupE2EHarness(): Promise<E2EHarness> {
     runtimeDir,
     expectedGenesisHash: GENESIS,
     getGenesisHash: async () => GENESIS,
-    now: () => NOW * 1000,
     verifyAgent: async ({ vault, agentAuthority }) => {
       if (vault !== vaultKey.toBase58() || agentAuthority !== agentKeypair.publicKey.toBase58()) {
         throw new Error("Agent not authorized for this vault");

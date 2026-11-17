@@ -1310,8 +1310,9 @@ test("strict RPC isolation: simulated mode cannot broadcast to a real network ad
       value: { err: null, confirmationStatus: "confirmed" },
     });
     realRpc.simulateTransaction = async () => ({
+      context: { slot: 100 },
       value: { err: null, logs: [], unitsConsumed: 1000 },
-    });
+    }) as any;
     realRpc.getGenesisHash = async () => GENESIS;
     realRpc.getLatestBlockhash = async () => ({
       blockhash: "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
