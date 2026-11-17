@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: agentvault-api
+    runtime: node
+    plan: starter
+    buildCommand: pnpm install
+    startCommand: pnpm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 20.18.0
+      - key: AGENTVAULT_NETWORK
+        value: devnet
+      - key: AGENTVAULT_RPC_URL
+        value: https://api.devnet.solana.com
+      - key: AGENTVAULT_DATABASE_URL
+        sync: false
+      - key: AGENTVAULT_OWNER_API_TOKEN
+        generateValue: true
+      - key: AGENTVAULT_DEVELOPER_API_TOKEN
+        generateValue: true
+      - key: AGENTVAULT_VAULT
+        value: G2GY1MSTtYK2UMiEJWCDDHQPBwTHKn1b9jZvSkghn77U
+
+databases:
+  - name: agentvault-db
+    databaseName: agentvault
+    user: agentvault_admin
+    plan: starter

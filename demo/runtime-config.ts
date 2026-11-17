@@ -16,8 +16,11 @@ export const RPC_URL =
 
 // Preserve the existing localnet directory.
 // Devnet gets its own separate state and private keys.
-export const RUNTIME_DIR = join(
-  process.cwd(),
-  "demo",
-  NETWORK === "localnet" ? "local" : "devnet"
-);
+// Supports custom persistent volume mount path (e.g. Render Persistent Disk) via AGENTVAULT_RUNTIME_DIR.
+export const RUNTIME_DIR =
+  process.env.AGENTVAULT_RUNTIME_DIR ??
+  join(
+    process.cwd(),
+    "demo",
+    NETWORK === "localnet" ? "local" : "devnet"
+  );

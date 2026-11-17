@@ -62,8 +62,8 @@ type DemoState = {
   vaultId: string;
 };
 
-const PORT = 8787;
-const HOST = "127.0.0.1";
+const PORT = Number(process.env.PORT || process.env.AGENTVAULT_PORT || 8787);
+const HOST = process.env.AGENTVAULT_HOST || process.env.HOST || "0.0.0.0";
 
 const API_CREDENTIALS = loadApiCredentials(process.env);
 
@@ -479,7 +479,7 @@ async function main(): Promise<void> {
       vaultPublicKey: state.vault,
       ownerApiToken: API_CREDENTIALS.ownerToken,
       frontendOrigin: "http://127.0.0.1:5173",
-      upstreamOrigin: `http://${HOST}:${PORT}`,
+      upstreamOrigin: "http://127.0.0.1:8787",
     });
     const selectedDashboardHandler = createSelectedVaultSessionHandler({
       fallbackHandler: legacyDashboardHandler,
