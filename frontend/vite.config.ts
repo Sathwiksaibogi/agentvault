@@ -11,6 +11,7 @@ export default defineConfig({
     proxy: {
       "/api": "http://127.0.0.1:8787",
       "/owner-vault": "http://127.0.0.1:8787",
+      "/dashboard": "http://127.0.0.1:8787",
       "/health": "http://127.0.0.1:8787",
     },
   },

@@ -76,6 +76,22 @@ function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function isSecureOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    if (url.protocol === "https:" && Boolean(url.hostname)) return true;
+    if (
+      url.protocol === "http:" &&
+      (url.hostname === "127.0.0.1" || url.hostname === "localhost")
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export function createOwnerDashboardSessionHandler(options: OwnerDashboardSessionOptions): RequestListener {
   const {
     apiHandler,
@@ -90,8 +106,8 @@ export function createOwnerDashboardSessionHandler(options: OwnerDashboardSessio
   const ownerBytes = new PublicKey(ownerPublicKey).toBytes();
   if (new PublicKey(ownerBytes).toBase58() !== ownerPublicKey) throw new Error("Non-canonical owner");
   if (new PublicKey(vaultPublicKey).toBase58() !== vaultPublicKey) throw new Error("Non-canonical vault");
-  if (frontendOrigin !== "http://127.0.0.1:5173" || upstreamOrigin !== "http://127.0.0.1:8787") {
-    throw new Error("Dashboard session is restricted to the local development origins");
+  if (!isSecureOrigin(frontendOrigin) || !isSecureOrigin(upstreamOrigin)) {
+    throw new Error("Dashboard session is restricted to local development or secure origins");
   }
   if (ownerApiToken.length < 32) throw new Error("Invalid owner token");
 

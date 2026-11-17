@@ -3,6 +3,22 @@
   "cleanUrls": true,
   "rewrites": [
     {
+      "source": "/owner-vault/:path*",
+      "destination": "https://agentvault-api.onrender.com/owner-vault/:path*"
+    },
+    {
+      "source": "/dashboard/:path*",
+      "destination": "https://agentvault-api.onrender.com/dashboard/:path*"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "https://agentvault-api.onrender.com/api/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "https://agentvault-api.onrender.com/health"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

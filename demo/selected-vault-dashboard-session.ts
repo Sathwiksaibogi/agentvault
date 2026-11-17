@@ -398,6 +398,22 @@ function digest(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
+function isSecureFrontendOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    if (url.protocol === "https:" && Boolean(url.hostname)) return true;
+    if (
+      url.protocol === "http:" &&
+      (url.hostname === "127.0.0.1" || url.hostname === "localhost")
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export function createSelectedVaultSessionHandler(
   options: SelectedVaultSessionOptions
 ): RequestListener {
@@ -417,8 +433,10 @@ export function createSelectedVaultSessionHandler(
     saveScopedApproval,
     now = Date.now,
   } = options;
-  if (frontendOrigin !== "http://127.0.0.1:5173") {
-    throw new Error("Selected-vault login requires the local frontend origin");
+  if (!isSecureFrontendOrigin(frontendOrigin)) {
+    throw new Error(
+      "Selected-vault login requires a secure frontend origin (http://127.0.0.1:5173 or https://)"
+    );
   }
   if (typeof expectedGenesisHash !== "string" || !expectedGenesisHash) {
     throw new Error("Missing expected genesis hash");

@@ -3,7 +3,8 @@ import BN from "bn.js";
 import dotenv from "dotenv";
 import { homedir } from "node:os";
 import { strict as assert } from "node:assert";
-import { createServer } from "node:http";
+import { createServer, type RequestListener } from "node:http";
+import { randomBytes } from "node:crypto";
 
 dotenv.config();
 if (!process.env.AGENTVAULT_DATABASE_URL) {
@@ -65,8 +66,6 @@ type DemoState = {
 const PORT = Number(process.env.PORT || process.env.AGENTVAULT_PORT || 8787);
 const HOST = process.env.AGENTVAULT_HOST || process.env.HOST || "0.0.0.0";
 
-const API_CREDENTIALS = loadApiCredentials(process.env);
-
 const DEMO_AGENTS = [
   {
     id: "agent-a",
@@ -96,6 +95,22 @@ const state: DemoState = existsSync(statePath)
       treasury: "9jf3fXNboToPTNqMpA5wxHiBTF442kRLF7dFYiasQucr",
       vaultId: "8001",
     };
+
+function resolveApiCredentials(env: NodeJS.ProcessEnv): ApiCredentials {
+  const effectiveEnv = { ...env };
+  if (!effectiveEnv.AGENTVAULT_OWNER_API_TOKEN) {
+    effectiveEnv.AGENTVAULT_OWNER_API_TOKEN = randomBytes(32).toString("hex");
+  }
+  if (!effectiveEnv.AGENTVAULT_DEVELOPER_API_TOKEN) {
+    effectiveEnv.AGENTVAULT_DEVELOPER_API_TOKEN = randomBytes(32).toString("hex");
+  }
+  if (!effectiveEnv.AGENTVAULT_DEVELOPER_VAULT) {
+    effectiveEnv.AGENTVAULT_DEVELOPER_VAULT = state.vault;
+  }
+  return loadApiCredentials(effectiveEnv);
+}
+
+const API_CREDENTIALS = resolveApiCredentials(process.env);
 
 const idl = JSON.parse(
   readFileSync(join(process.cwd(), "target/idl/agentvault.json"), "utf8")
@@ -473,20 +488,26 @@ async function main(): Promise<void> {
 
       cachedRead,
     });
+    const frontendOrigin =
+      process.env.AGENTVAULT_FRONTEND_ORIGIN || "http://127.0.0.1:5173";
+    const upstreamOrigin =
+      process.env.AGENTVAULT_UPSTREAM_ORIGIN || `http://127.0.0.1:${PORT}`;
+    const isPublicShowcase = process.env.AGENTVAULT_PUBLIC_SHOWCASE === "true";
+
     const legacyDashboardHandler = createOwnerDashboardSessionHandler({
       apiHandler,
       ownerPublicKey: state.owner,
       vaultPublicKey: state.vault,
       ownerApiToken: API_CREDENTIALS.ownerToken,
-      frontendOrigin: "http://127.0.0.1:5173",
-      upstreamOrigin: "http://127.0.0.1:8787",
+      frontendOrigin,
+      upstreamOrigin,
     });
     const selectedDashboardHandler = createSelectedVaultSessionHandler({
       fallbackHandler: legacyDashboardHandler,
       rpc: connection,
       network: NETWORK,
       expectedGenesisHash: state.genesisHash,
-      frontendOrigin: "http://127.0.0.1:5173",
+      frontendOrigin,
       runtimeDir: RUNTIME_DIR,
       developerKeyRepository: database.repository,
       readScopedAgents: async (verified) => {
@@ -553,69 +574,96 @@ async function main(): Promise<void> {
         };
       },
     });
-    const server = createServer(
-      createModelAAgentInboxHttpHandler({
-        fallbackHandler: createModelAPaymentHttpHandler({
-          fallbackHandler: selectedDashboardHandler,
-          lookupDeveloperKey: (keyId) => database.repository.findById(keyId),
-          network: NETWORK,
-          runtimeDir: RUNTIME_DIR,
-          expectedGenesisHash: state.genesisHash,
-          getGenesisHash: () => connection.getGenesisHash(),
-          checkPolicy: async ({ trustedScope, input }) => {
-            await verifyModelAPaymentIntentPolicy({
-              rpc: connection,
-              accounts: {
-                fetchAgent: (address) =>
-                  program.account.agent.fetch(address, "confirmed"),
-                fetchTask: (address) =>
-                  program.account.task.fetch(address, "confirmed"),
-              },
-              expectedDevnetGenesisHash: state.genesisHash,
-              trustedScope,
-              input,
-            });
-          },
-        }),
+    const baseHandler = createModelAAgentInboxHttpHandler({
+      fallbackHandler: createModelAPaymentHttpHandler({
+        fallbackHandler: selectedDashboardHandler,
+        lookupDeveloperKey: (keyId) => database.repository.findById(keyId),
         network: NETWORK,
         runtimeDir: RUNTIME_DIR,
         expectedGenesisHash: state.genesisHash,
         getGenesisHash: () => connection.getGenesisHash(),
-        verifyAgent: async ({ vault, agentAuthority }) => {
-          const vaultKey = new PublicKey(vault);
-          const authorityKey = new PublicKey(agentAuthority);
-          const [agentPda] = PublicKey.findProgramAddressSync(
-            [
-              Buffer.from("agent"),
-              vaultKey.toBuffer(),
-              authorityKey.toBuffer(),
-            ],
-            new PublicKey(state.programId)
-          );
-          const vaultInfo = await connection.getAccountInfo(
-            vaultKey,
-            "confirmed"
-          );
-          if (
-            !vaultInfo ||
-            !vaultInfo.owner.equals(new PublicKey(state.programId)) ||
-            vaultInfo.data.length !== 90 ||
-            vaultInfo.data[88] !== 0
-          )
-            throw new Error("Vault unavailable or paused");
-          const agent = await program.account.agent.fetch(
-            agentPda,
-            "confirmed"
-          );
-          if (
-            !agent.active ||
-            !agent.vault.equals(vaultKey) ||
-            !agent.authority.equals(authorityKey)
-          )
-            throw new Error("Agent not active in selected vault");
+        checkPolicy: async ({ trustedScope, input }) => {
+          await verifyModelAPaymentIntentPolicy({
+            rpc: connection,
+            accounts: {
+              fetchAgent: (address) =>
+                program.account.agent.fetch(address, "confirmed"),
+              fetchTask: (address) =>
+                program.account.task.fetch(address, "confirmed"),
+            },
+            expectedDevnetGenesisHash: state.genesisHash,
+            trustedScope,
+            input,
+          });
         },
-      })
-    );
+      }),
+      network: NETWORK,
+      runtimeDir: RUNTIME_DIR,
+      expectedGenesisHash: state.genesisHash,
+      getGenesisHash: () => connection.getGenesisHash(),
+      verifyAgent: async ({ vault, agentAuthority }) => {
+        const vaultKey = new PublicKey(vault);
+        const authorityKey = new PublicKey(agentAuthority);
+        const [agentPda] = PublicKey.findProgramAddressSync(
+          [
+            Buffer.from("agent"),
+            vaultKey.toBuffer(),
+            authorityKey.toBuffer(),
+          ],
+          new PublicKey(state.programId)
+        );
+        const vaultInfo = await connection.getAccountInfo(
+          vaultKey,
+          "confirmed"
+        );
+        if (
+          !vaultInfo ||
+          !vaultInfo.owner.equals(new PublicKey(state.programId)) ||
+          vaultInfo.data.length !== 90 ||
+          vaultInfo.data[88] !== 0
+        )
+          throw new Error("Vault unavailable or paused");
+        const agent = await program.account.agent.fetch(
+          agentPda,
+          "confirmed"
+        );
+        if (
+          !agent.active ||
+          !agent.vault.equals(vaultKey) ||
+          !agent.authority.equals(authorityKey)
+        )
+          throw new Error("Agent not active in selected vault");
+      },
+    });
+
+    const rootHandler: RequestListener = (req, res) => {
+      if (isPublicShowcase) {
+        const method = (req.method || "GET").toUpperCase();
+        const url = new URL(req.url || "/", "http://127.0.0.1");
+        const pathname = url.pathname;
+
+        const isAuthPost =
+          pathname.startsWith("/owner-vault/auth/") ||
+          pathname.startsWith("/dashboard/auth/");
+
+        if (method !== "GET" && method !== "HEAD" && !isAuthPost) {
+          res.statusCode = 403;
+          res.setHeader("Content-Type", "application/json");
+          res.setHeader("Cache-Control", "no-store");
+          res.end(
+            JSON.stringify({
+              error:
+                "Payment mutations, workflow approvals, and credential issuance are disabled in public showcase mode.",
+            })
+          );
+          return;
+        }
+      }
+
+      return baseHandler(req, res);
+    };
+
+    const server = createServer(rootHandler);
     configureApiHttpServer(server);
 
     let shuttingDown = false;
@@ -668,7 +716,11 @@ async function main(): Promise<void> {
 
         console.log("\n=== AGENTVAULT BACKEND API ===");
         console.log("Network:", NETWORK);
-        console.log("Mode: READ ONLY");
+        console.log(
+          "Mode:",
+          isPublicShowcase ? "PUBLIC SHOWCASE (mutations disabled)" : "READ ONLY"
+        );
+        console.log("Frontend origin:", frontendOrigin);
         console.log("PostgreSQL authentication: enabled");
         console.log(`Health: http://${HOST}:${PORT}/health`);
         console.log(`Treasury: http://${HOST}:${PORT}/api/treasury`);

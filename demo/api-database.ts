@@ -10,7 +10,8 @@ export type ApiDatabase = {
 export function createApiDatabase(
   env: NodeJS.ProcessEnv = process.env
 ): ApiDatabase {
-  const connectionString = env.AGENTVAULT_DATABASE_URL;
+  const connectionString =
+    env.AGENTVAULT_DATABASE_URL || env.DATABASE_URL;
 
   if (!connectionString || connectionString.trim().length === 0) {
     throw new Error(

@@ -13,12 +13,12 @@ services:
         value: devnet
       - key: AGENTVAULT_RPC_URL
         value: https://api.devnet.solana.com
+      - key: AGENTVAULT_PUBLIC_SHOWCASE
+        value: "true"
+      - key: AGENTVAULT_FRONTEND_ORIGIN
+        sync: false
       - key: AGENTVAULT_DATABASE_URL
         sync: false
-      - key: AGENTVAULT_OWNER_API_TOKEN
-        generateValue: true
-      - key: AGENTVAULT_DEVELOPER_API_TOKEN
-        generateValue: true
       - key: AGENTVAULT_VAULT
         value: G2GY1MSTtYK2UMiEJWCDDHQPBwTHKn1b9jZvSkghn77U
 
